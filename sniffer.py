@@ -167,33 +167,126 @@ class NetVibeSniffer:
     # Public API
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Helpers: environment checks
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def check_environment() -> tuple[bool, str]:
+        """
+        Verify that packet capture prerequisites are met.
+        Returns (ok: bool, message: str).
+        """
+        import sys
+
+        # 1. Must be Windows Admin or Unix root
+        if sys.platform == "win32":
+            import ctypes
+            if not ctypes.windll.shell32.IsUserAnAdmin():
+                return False, (
+                    "Administrator privileges required on Windows.\n"
+                    "Right-click your terminal and choose 'Run as administrator'."
+                )
+        else:
+            import os
+            if os.geteuid() != 0:
+                return False, "Root privileges required. Re-run with sudo."
+
+        # 2. Check libpcap / Npcap is available
+        try:
+            from scapy.arch import get_if_list
+            ifaces = get_if_list()
+            if not ifaces:
+                return False, "No network interfaces found."
+        except Exception as e:
+            return False, f"Scapy interface check failed: {e}"
+
+        # 3. Probe whether pcap capture actually works
+        try:
+            from scapy.config import conf
+            # conf.use_pcap is True when Npcap/libpcap is available
+            if sys.platform == "win32" and not getattr(conf, "use_pcap", False):
+                return False, (
+                    "Npcap is not installed or not working properly.\n"
+                    "Download and install Npcap from https://npcap.com/\n"
+                    "Make sure to check 'WinPcap API-compatible mode' during installation."
+                )
+        except Exception:
+            pass
+
+        return True, "OK"
+
+    @staticmethod
+    def _resolve_interface(requested: str | None) -> str | None:
+        """
+        On Windows, auto-select the first non-loopback, non-virtual interface
+        when no interface is specified. Returns the interface name Scapy will use.
+        """
+        import sys
+        if requested is not None:
+            return requested
+        if sys.platform != "win32":
+            return None  # Scapy handles 'all' fine on Linux/macOS
+
+        # On Windows without pcap, 'None' means all, which often fails.
+        # Pick the active physical interface.
+        try:
+            from scapy.arch.windows import get_windows_if_list
+            skip = {"loopback", "pseudo", "virtual", "vmware", "vpn",
+                    "openvpn", "bluetooth", "tap-windows", "dco"}
+            candidates = []
+            for iface in get_windows_if_list():
+                desc = (iface.get("description") or "").lower()
+                name = (iface.get("name") or "").lower()
+                if any(s in desc or s in name for s in skip):
+                    continue
+                candidates.append(iface.get("name"))
+            if candidates:
+                return candidates[0]   # e.g. "Wi-Fi" or "Ethernet"
+        except Exception:
+            pass
+        return None  # fall back to Scapy default
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def start(self) -> None:
         """Start background sniffing."""
         if self._running:
             logger.warning("Sniffer already running.")
             return
 
+        iface = self._resolve_interface(self._interface)
+
         self._stats.session_id = db.start_session(
-            self._conn, interface=self._interface or "all"
+            self._conn, interface=iface or "auto"
         )
         logger.info(
             "Starting sniffer on interface=%s  session_id=%d",
-            self._interface or "all",
+            iface or "auto",
             self._stats.session_id,
         )
 
-        # Sniff DNS + TCP/UDP on port 443 (HTTPS) and 80 (HTTP)
-        bpf_filter = "udp port 53 or tcp port 443 or tcp port 80 or udp port 443"
+        # BPF filter only works when libpcap/Npcap is available.
+        # When it's not, drop the filter so Scapy uses its own layer matching.
+        from scapy.config import conf as scapy_conf
+        import sys
+        has_pcap = getattr(scapy_conf, "use_pcap", False) or sys.platform != "win32"
+        bpf_filter = (
+            "udp port 53 or tcp port 443 or tcp port 80 or udp port 443"
+            if has_pcap else None
+        )
 
         self._sniffer = AsyncSniffer(
-            iface=self._interface,
+            iface=iface,
             filter=bpf_filter,
             prn=self._process_packet,
             store=False,
         )
         self._sniffer.start()
         self._running = True
-        logger.info("Sniffer started.")
+        logger.info("Sniffer started on iface=%s  filter=%s", iface, bpf_filter)
 
     def stop(self) -> SnifferStats:
         """Stop sniffing and finalise the session record."""

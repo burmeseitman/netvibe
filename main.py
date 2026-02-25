@@ -9,15 +9,18 @@ Split-screen Rich dashboard:
   │  Live Packet Log                             │
   └──────────────────────────────────────────────┘
 
-All data is read directly from the SQLite database so the dashboard
-reflects the true persisted state, not just in-process memory.
-
 Usage
 -----
-    # Requires Administrator (Windows) or root (Linux/macOS)
+    # Normal capture (requires Administrator / root + Npcap on Windows)
     python main.py
     python main.py --interface "Wi-Fi"
     python main.py --interface eth0 --refresh 1 --log-lines 30
+
+    # Demo mode — no sniffing, injects fake traffic so you can see the UI
+    python main.py --demo
+
+    # List available interfaces and exit
+    python main.py --list-interfaces
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import random
 import signal
 import sys
 import time
@@ -40,11 +44,11 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.rule import Rule
 
 import database as db
 from sniffer import (
     NetVibeSniffer,
+    DOMAIN_CATALOG,
     DOMAIN_LABELS,
     DOMAIN_KEYWORDS,
     KEYWORD_TO_LABEL,
@@ -120,12 +124,14 @@ def fmt_bytes(n: int | None) -> str:
 # Panel builders
 # ---------------------------------------------------------------------------
 
-def build_header(stats, interface: str, refresh: float) -> Panel:
+def build_header(stats, interface: str, refresh: float, demo: bool = False) -> Panel:
     """Top status bar."""
     elapsed = datetime.utcnow() - stats.start_time
     elapsed_str = str(elapsed).split(".")[0]
 
     txt = Text()
+    if demo:
+        txt.append("  [DEMO] ", style="bold yellow")
     txt.append("  NetVibe ", style="bold cyan")
     txt.append("│ ", style="dim")
     txt.append("iface: ", style="dim")
@@ -140,7 +146,8 @@ def build_header(stats, interface: str, refresh: float) -> Panel:
     txt.append("Ctrl+C", style="bold white")
     txt.append(" to quit  │  log → netvibe.log", style="dim")
 
-    return Panel(txt, style="on grey7", padding=(0, 1))
+    border = "on grey7"
+    return Panel(txt, style=border, padding=(0, 1))
 
 
 def build_users_table(conn) -> Panel:
@@ -263,6 +270,7 @@ def build_layout(
     interface: str,
     refresh: float,
     log_lines: int,
+    demo: bool = False,
 ) -> Layout:
     """Compose the full split-screen layout."""
     root = Layout(name="root")
@@ -271,10 +279,198 @@ def build_layout(
         Layout(name="top",    ratio=2),
         Layout(name="bottom", ratio=3),
     )
-    root["header"].update(build_header(stats, interface, refresh))
+    root["header"].update(build_header(stats, interface, refresh, demo=demo))
     root["top"].update(build_users_table(conn))
     root["bottom"].update(build_log_table(conn, log_buf, log_lines))
     return root
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight check
+# ---------------------------------------------------------------------------
+
+def preflight_check(interface: str | None) -> bool:
+    """
+    Check whether Npcap and admin rights are available.
+    Prints a rich diagnostic table and returns True if ready.
+    """
+    import ctypes
+
+    checks: list[tuple[str, bool, str]] = []
+
+    # 1. Admin rights
+    if sys.platform == "win32":
+        is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        checks.append((
+            "Administrator privileges",
+            is_admin,
+            "OK" if is_admin else "Run terminal as Administrator",
+        ))
+    else:
+        is_root = os.geteuid() == 0
+        checks.append((
+            "Root privileges",
+            is_root,
+            "OK" if is_root else "Re-run with sudo",
+        ))
+
+    # 2. Scapy import
+    try:
+        import scapy  # noqa: F401
+        checks.append(("Scapy installed", True, "OK"))
+    except ImportError:
+        checks.append(("Scapy installed", False, "pip install scapy"))
+
+    # 3. libpcap / Npcap
+    try:
+        from scapy.config import conf as scapy_conf
+        has_pcap = getattr(scapy_conf, "use_pcap", False)
+        if sys.platform == "win32":
+            label = "Npcap / WinPcap driver"
+            hint = (
+                "OK" if has_pcap else
+                "Install Npcap: https://npcap.com/  (check WinPcap API-compatible mode)"
+            )
+        else:
+            label = "libpcap"
+            hint = "OK" if has_pcap else "sudo apt install libpcap-dev"
+        checks.append((label, has_pcap, hint))
+    except Exception as e:
+        checks.append(("libpcap / Npcap check", False, str(e)))
+
+    # 4. Interface exists (best-effort)
+    if interface:
+        try:
+            from scapy.arch import get_if_list
+            found = interface in get_if_list()
+            checks.append((
+                f"Interface '{interface}'",
+                found,
+                "found" if found else "Not found — run --list-interfaces to see options",
+            ))
+        except Exception:
+            pass
+
+    # Print table
+    t = Table(box=box.ROUNDED, title="[bold cyan]Pre-flight Check[/bold cyan]", expand=False)
+    t.add_column("Check",  style="white",  min_width=32)
+    t.add_column("Status", style="white",  min_width=8,  justify="center")
+    t.add_column("Detail", style="dim",    min_width=50)
+
+    all_ok = True
+    for name, passed, hint in checks:
+        status = Text("PASS", style="bold green") if passed else Text("FAIL", style="bold red")
+        t.add_row(name, status, hint)
+        if not passed:
+            all_ok = False
+
+    console.print(t)
+    console.print()
+    return all_ok
+
+
+# ---------------------------------------------------------------------------
+# Demo mode: inject fake traffic into the DB
+# ---------------------------------------------------------------------------
+
+DEMO_IPS = [
+    "192.168.1.10", "192.168.1.11", "192.168.1.42",
+    "10.0.0.5",     "10.0.0.7",
+]
+DEMO_DST = [
+    ("52.5.1.1",    443),
+    ("18.234.2.1",  443),
+    ("142.250.1.1", 443),
+    ("104.21.1.1",  443),
+    ("104.22.2.2",  443),
+]
+
+
+class DemoStats:
+    """Minimal stats object matching what the real sniffer exposes."""
+    def __init__(self) -> None:
+        self.start_time    = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.total_packets = 0
+        self.total_alerts  = 0
+        self.session_id    = 0
+
+
+def run_demo(conn, args: argparse.Namespace) -> None:
+    """Inject fake packets into SQLite and display the dashboard."""
+    console.print(
+        Panel(
+            "[bold yellow]DEMO MODE[/bold yellow] — No real packet capture.\n"
+            "Fake AI traffic is injected into the database so you can see the dashboard.\n\n"
+            "[dim]To capture real traffic, fix Npcap (see README) and run without --demo.[/dim]",
+            border_style="yellow",
+        )
+    )
+    time.sleep(1.5)
+
+    stats  = DemoStats()
+    stats.session_id = db.start_session(conn, interface="demo")
+    log_buf = LiveLogBuffer()
+
+    stop_event = Event()
+
+    def handle_sigint(sig, frame):
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, handle_sigint)
+
+    # Map fake dst IPs to domains
+    ip_to_domain: dict[str, str] = {}
+    for (dst_ip, _), (_, kw, _) in zip(DEMO_DST, DOMAIN_CATALOG[:len(DEMO_DST)]):
+        ip_to_domain[dst_ip] = kw
+
+    with Live(
+        console=console,
+        refresh_per_second=max(1, int(1 / args.refresh)),
+        screen=True,
+    ) as live:
+        while not stop_event.is_set():
+            for _ in range(random.randint(1, 3)):
+                src_ip           = random.choice(DEMO_IPS)
+                dst_ip, dst_port = random.choice(DEMO_DST)
+                domain           = ip_to_domain[dst_ip]
+                payload_len      = random.randint(128, 8192)
+                direction        = "outbound"
+                severity         = random.choice(["info", "info", "warning", "critical"])
+
+                pkt_id = db.insert_packet(
+                    conn,
+                    src_ip=src_ip,
+                    dst_ip=dst_ip,
+                    src_port=random.randint(49152, 65535),
+                    dst_port=dst_port,
+                    protocol="TCP",
+                    payload_len=payload_len,
+                    raw_summary=f"[demo] {src_ip} -> {dst_ip} {domain}",
+                )
+                db.insert_alert(
+                    conn,
+                    packet_id=pkt_id,
+                    domain=domain,
+                    severity=severity,
+                    direction=direction,
+                )
+                conn.commit()
+                stats.total_packets += 1
+                stats.total_alerts  += 1
+
+            layout = build_layout(
+                conn=conn,
+                stats=stats,
+                log_buf=log_buf,
+                interface="demo",
+                refresh=args.refresh,
+                log_lines=args.log_lines,
+                demo=True,
+            )
+            live.update(layout)
+            time.sleep(args.refresh)
+
+    db.end_session(conn, stats.session_id, stats.total_packets, stats.total_alerts)
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +485,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--interface", "-i",
         default=None,
-        help="Network interface (default: all). E.g. 'Wi-Fi', 'eth0', 'en0'.",
+        help="Network interface to sniff (default: auto-select). E.g. 'Wi-Fi', 'eth0'.",
     )
     p.add_argument(
         "--refresh", "-r",
@@ -303,6 +499,21 @@ def parse_args() -> argparse.Namespace:
         default=25,
         help="Number of log rows in the bottom panel (default: 25).",
     )
+    p.add_argument(
+        "--demo",
+        action="store_true",
+        help="Run demo mode: inject fake traffic so the UI is visible without Npcap.",
+    )
+    p.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip the pre-flight environment check and attempt capture anyway.",
+    )
+    p.add_argument(
+        "--list-interfaces",
+        action="store_true",
+        help="Print available network interfaces and exit.",
+    )
     return p.parse_args()
 
 
@@ -313,16 +524,65 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    # Initialise DB
+    # ── List interfaces mode ─────────────────────────────────────────────
+    if args.list_interfaces:
+        try:
+            from scapy.arch.windows import get_windows_if_list
+            rows = get_windows_if_list()
+            t = Table(
+                box=box.ROUNDED,
+                title="[bold cyan]Available Network Interfaces[/bold cyan]",
+            )
+            t.add_column("Name",        style="bright_white")
+            t.add_column("Description", style="dim")
+            t.add_column("MAC",         style="dim")
+            t.add_column("IPv4",        style="green")
+            for r in rows:
+                ips  = r.get("ips") or []
+                ipv4 = next((ip for ip in ips if "." in ip), "—")
+                t.add_row(
+                    r.get("name", "?"),
+                    r.get("description", "?"),
+                    r.get("mac", "?"),
+                    ipv4,
+                )
+            console.print(t)
+        except Exception as e:
+            console.print(f"[red]Could not list interfaces: {e}[/red]")
+        return
+
+    # ── Initialise DB ────────────────────────────────────────────────────
     conn = db.init_db()
 
-    # In-process log ring buffer
+    # ── Demo mode (no capture needed) ───────────────────────────────────
+    if args.demo:
+        run_demo(conn, args)
+        conn.close()
+        return
+
+    # ── Pre-flight check ─────────────────────────────────────────────────
+    if not args.skip_preflight:
+        console.print()
+        console.rule("[bold cyan]NetVibe Pre-flight Check[/bold cyan]")
+        console.print()
+        ready = preflight_check(args.interface)
+        if not ready:
+            console.print(
+                "[bold red]Pre-flight failed.[/bold red]  "
+                "Fix the issues above, then re-run.\n\n"
+                "  [dim]Tip: run [white]python main.py --demo[/white] "
+                "to preview the UI without Npcap.[/dim]\n"
+            )
+            sys.exit(1)
+        console.print("[bold green]All checks passed.[/bold green]  Starting capture...\n")
+        time.sleep(0.8)
+
+    # ── Live capture mode ────────────────────────────────────────────────
     log_buf = LiveLogBuffer()
 
     def on_alert(domain: str, info: dict) -> None:
         log_buf.push({"domain": domain, **info})
 
-    # Create sniffer
     sniffer = NetVibeSniffer(
         conn=conn,
         interface=args.interface,
@@ -336,17 +596,17 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, handle_sigint)
 
-    # Brief startup banner before Live takes over
+    # Startup banner
+    svc_list = "  ".join(
+        f"[{KEYWORD_TO_STYLE.get(kw, 'white')}]{lbl}[/]"
+        for lbl, kw, _ in DOMAIN_CATALOG
+    )
     console.print(
         Panel(
             f"[bold cyan]NetVibe[/bold cyan] starting on "
-            f"[yellow]{args.interface or 'all interfaces'}[/yellow]\n"
-            f"Monitoring [bold]{len(DOMAIN_LABELS)}[/bold] AI services: "
-            + "  ".join(
-                f"[{KEYWORD_TO_STYLE.get(next((kw for lbl2, kw, _ in __import__('sniffer').DOMAIN_CATALOG if lbl2 == lbl), lbl), 'white')}]{lbl}[/]"
-                for lbl in DOMAIN_LABELS
-            ),
-            title="[bold]Initialising[/bold]",
+            f"[yellow]{args.interface or 'auto'}[/yellow]\n"
+            f"Monitoring [bold]{len(DOMAIN_LABELS)}[/bold] AI services: {svc_list}",
+            title="[bold]Starting capture[/bold]",
             border_style="cyan",
         )
     )
@@ -361,7 +621,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # ── Rich Live split-screen dashboard ──────────────────────────────
+    # ── Rich Live split-screen dashboard ──────────────────────────────────
     with Live(
         console=console,
         refresh_per_second=max(1, int(1 / args.refresh)),
@@ -372,14 +632,14 @@ def main() -> None:
                 conn=conn,
                 stats=sniffer.stats,
                 log_buf=log_buf,
-                interface=args.interface or "all",
+                interface=args.interface or "auto",
                 refresh=args.refresh,
                 log_lines=args.log_lines,
             )
             live.update(layout)
             time.sleep(args.refresh)
 
-    # ── Teardown ─────────────────────────────────────────────────────
+    # ── Teardown ─────────────────────────────────────────────────────────
     final = sniffer.stop()
     conn.close()
 

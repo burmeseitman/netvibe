@@ -1,15 +1,12 @@
 # NetVibe — Terminal Network Monitor
 
 A lightweight, terminal-based network monitor written in Python.  
-Captures live traffic with **Scapy**, stores events in **SQLite**, and renders a live dashboard that highlights connections to AI services.
+Captures live traffic with **Scapy**, stores events in **SQLite**, and renders a
+split-screen Rich dashboard highlighting connections to AI services.
 
-## Monitored Domains
+## Monitored AI Services (15 domains)
 
-| Keyword | Service |
-|---------|---------|
-| `openai.com` | OpenAI / ChatGPT |
-| `claude.ai` | Anthropic Claude |
-| `gemini` | Google Gemini (gemini.google.com, Gemini API) |
+OpenAI · Claude · Gemini · GitHub Copilot · Perplexity · Grok · Mistral · Cohere · HuggingFace · DeepSeek
 
 ## Requirements
 
@@ -17,33 +14,62 @@ Captures live traffic with **Scapy**, stores events in **SQLite**, and renders a
 |------------|-------|
 | Python 3.10+ | uses `X \| Y` union type hints |
 | Scapy 2.5+ | `pip install scapy` |
-| **Npcap** (Windows only) | download from https://npcap.com/ |
+| Rich 13.7+ | `pip install rich` |
+| **Npcap** (Windows only) | see below |
 | Admin / root privileges | required for raw packet capture |
 
 ```bash
 pip install -r requirements.txt
 ```
 
+## Quick Start — Demo Mode (no Npcap needed)
+
+```bash
+python main.py --demo
+```
+
+This injects synthetic traffic into the dashboard so you can see the UI immediately,
+without needing Npcap or administrator rights.
+
+## Windows — Installing Npcap
+
+If you see `WARNING: No libpcap provider available`, Npcap is not installed:
+
+1. Download the installer from **https://npcap.com/#download**
+2. Run as **Administrator**
+3. During setup, check **"Install Npcap in WinPcap API-compatible mode"**
+4. Reboot (or restart the terminal as Administrator)
+5. Verify: `sc query npcap` should show `STATE: RUNNING`
+
 ## Usage
 
 ```bash
-# Sniff all interfaces (default)
-python main.py
+# Pre-flight check then capture (auto-selects interface)
+python main.py                       # run as Administrator
 
 # Specific interface
-python main.py --interface "Wi-Fi"      # Windows
-python main.py --interface eth0         # Linux
-python main.py --interface en0          # macOS
+python main.py --interface "Wi-Fi"   # Windows
+python main.py --interface eth0      # Linux
+python main.py --interface en0       # macOS
 
-# Faster refresh, no colours
-python main.py --refresh 1 --no-color
+# List available interfaces
+python main.py --list-interfaces
+
+# Demo mode — no capture, injects fake traffic
+python main.py --demo
+
+# Skip the pre-flight check (advanced)
+python main.py --skip-preflight
 ```
 
 ```
 Options:
-  -i, --interface   Network interface (default: all)
-  -r, --refresh     Dashboard refresh seconds (default: 2)
-  --no-color        Disable ANSI colours
+  -i, --interface       Network interface (default: auto)
+  -r, --refresh         Dashboard refresh seconds (default: 2)
+  -l, --log-lines       Rows in live-log panel (default: 25)
+  --demo                Run demo mode (no capture required)
+  --list-interfaces     Print interfaces and exit
+  --skip-preflight      Skip the environment check
 ```
 
 ## Project Structure
