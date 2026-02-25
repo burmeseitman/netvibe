@@ -5,3 +5,4 @@
 #       On Linux/macOS, run the script as root / with sudo.
 
 scapy>=2.5.0
+rich>=13.7.0

@@ -215,7 +215,7 @@ def fetch_recent_alerts(conn: sqlite3.Connection, limit: int = 50) -> list[sqlit
 
 
 def fetch_alert_stats(conn: sqlite3.Connection) -> dict:
-    """Return a summary dict of alert counts grouped by domain."""
+    """Return a summary dict of alert counts grouped by domain keyword."""
     rows = conn.execute(
         """
         SELECT domain, COUNT(*) AS cnt
@@ -225,3 +225,54 @@ def fetch_alert_stats(conn: sqlite3.Connection) -> dict:
         """
     ).fetchall()
     return {row["domain"]: row["cnt"] for row in rows}
+
+
+def fetch_active_users(conn: sqlite3.Connection, minutes: int = 60) -> list[sqlite3.Row]:
+    """
+    Return one row per (src_ip, domain) seen in the last `minutes` minutes,
+    with total hit count and the most recent timestamp.
+    Used by the Rich dashboard's top panel.
+    """
+    return conn.execute(
+        """
+        SELECT
+            p.src_ip,
+            a.domain,
+            COUNT(*)                        AS hits,
+            MAX(a.timestamp)                AS last_seen,
+            SUM(p.payload_len)              AS total_bytes
+        FROM alerts a
+        JOIN packets p ON p.id = a.packet_id
+        WHERE a.timestamp >= datetime('now', :window)
+        GROUP BY p.src_ip, a.domain
+        ORDER BY last_seen DESC
+        """,
+        {"window": f"-{minutes} minutes"},
+    ).fetchall()
+
+
+def fetch_live_logs(conn: sqlite3.Connection, limit: int = 100) -> list[sqlite3.Row]:
+    """
+    Return the most recent alert rows with full packet details
+    for the live-log panel.
+    """
+    return conn.execute(
+        """
+        SELECT
+            a.timestamp   AS ts,
+            p.src_ip,
+            p.dst_ip,
+            p.protocol,
+            p.src_port,
+            p.dst_port,
+            a.domain,
+            a.direction,
+            a.severity,
+            p.payload_len
+        FROM alerts a
+        JOIN packets p ON p.id = a.packet_id
+        ORDER BY a.timestamp DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()

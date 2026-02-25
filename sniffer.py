@@ -2,9 +2,16 @@
 sniffer.py - Packet sniffer module for NetVibe Network Monitor.
 
 Uses Scapy to capture live traffic and detect connections to:
-  - openai.com
-  - claude.ai
-  - gemini (*.google.com / gemini.google.com)
+  OpenAI    – openai.com, api.openai.com
+  Claude    – claude.ai, api.anthropic.com
+  Gemini    – gemini.google.com, generativelanguage.googleapis.com
+  Copilot   – copilot.microsoft.com, copilot.github.com
+  Perplexity– perplexity.ai
+  Grok      – grok.x.ai, x.ai
+  Mistral   – mistral.ai, api.mistral.ai
+  Cohere    – cohere.com, api.cohere.ai
+  HuggingFace – huggingface.co
+  DeepSeek  – deepseek.com, chat.deepseek.com
 
 Detected packets are stored in the SQLite database via database.py.
 """
@@ -32,19 +39,34 @@ logger = logging.getLogger(__name__)
 # Monitored domains / keywords
 # ---------------------------------------------------------------------------
 
-MONITORED_DOMAINS: list[str] = [
-    "openai.com",
-    "claude.ai",
-    "gemini.google.com",
-    "generativelanguage.googleapis.com",  # Gemini REST API endpoint
+# Each entry: (display_label, substring_keyword, Rich style)
+DOMAIN_CATALOG: list[tuple[str, str, str]] = [
+    # label              keyword                   Rich colour
+    ("OpenAI",          "openai.com",             "bright_green"),
+    ("Claude",          "claude.ai",              "magenta"),
+    ("Claude",          "anthropic.com",          "magenta"),
+    ("Gemini",          "gemini.google.com",       "blue"),
+    ("Gemini",          "generativelanguage",      "blue"),
+    ("Copilot",         "copilot.microsoft.com",   "cyan"),
+    ("Copilot",         "copilot.github.com",      "cyan"),
+    ("Perplexity",      "perplexity.ai",           "yellow"),
+    ("Grok",            "grok.x.ai",               "bright_red"),
+    ("Grok",            ".x.ai",                   "bright_red"),
+    ("Mistral",         "mistral.ai",              "orange3"),
+    ("Cohere",          "cohere.com",              "dark_orange"),
+    ("Cohere",          "cohere.ai",               "dark_orange"),
+    ("HuggingFace",     "huggingface.co",          "gold3"),
+    ("DeepSeek",        "deepseek.com",            "bright_blue"),
 ]
 
-# Quick substring check – catches subdomains automatically
-DOMAIN_KEYWORDS: list[str] = [
-    "openai.com",
-    "claude.ai",
-    "gemini",       # catches gemini.google.com, etc.
-]
+# keyword → label  (used for fast lookup)
+KEYWORD_TO_LABEL: dict[str, str] = {kw: label for label, kw, _ in DOMAIN_CATALOG}
+# keyword → style
+KEYWORD_TO_STYLE: dict[str, str] = {kw: style for _, kw, style in DOMAIN_CATALOG}
+# ordered unique keywords
+DOMAIN_KEYWORDS: list[str] = list(dict.fromkeys(kw for _, kw, _ in DOMAIN_CATALOG))
+# ordered unique labels
+DOMAIN_LABELS: list[str] = list(dict.fromkeys(label for label, _, _ in DOMAIN_CATALOG))
 
 
 # ---------------------------------------------------------------------------
@@ -52,11 +74,17 @@ DOMAIN_KEYWORDS: list[str] = [
 # ---------------------------------------------------------------------------
 
 class IPCache:
-    """Thread-safe mapping of domain keyword → resolved IP addresses."""
+    """
+    Thread-safe mapping of domain keyword → resolved IP addresses.
+    Also tracks first-seen / last-seen times per source-IP for the
+    "active users" dashboard panel.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._cache: dict[str, set[str]] = {kw: set() for kw in DOMAIN_KEYWORDS}
+        # src_ip → {label: last_seen_ts}
+        self._user_activity: dict[str, dict[str, str]] = {}
 
     def add(self, domain: str, ip: str) -> None:
         with self._lock:
@@ -72,6 +100,22 @@ class IPCache:
                 if ip in ips:
                     return kw
         return None
+
+    def record_user(self, src_ip: str, label: str) -> None:
+        """Record that src_ip accessed an AI service (by label)."""
+        ts = datetime.utcnow().strftime("%H:%M:%S")
+        with self._lock:
+            if src_ip not in self._user_activity:
+                self._user_activity[src_ip] = {}
+            self._user_activity[src_ip][label] = ts
+
+    def user_snapshot(self) -> dict[str, dict[str, str]]:
+        """Return a copy of {src_ip: {label: last_seen}} for the dashboard."""
+        with self._lock:
+            return {
+                ip: dict(labels)
+                for ip, labels in self._user_activity.items()
+            }
 
     def snapshot(self) -> dict[str, set[str]]:
         with self._lock:
@@ -272,6 +316,10 @@ class NetVibeSniffer:
             payload_len,
         )
 
+        # ── Track user activity for dashboard ────────────────────────
+        label = KEYWORD_TO_LABEL.get(matched_kw, matched_kw)
+        self._ip_cache.record_user(src_ip, label)
+
         # ── Persist to DB ─────────────────────────────────────────────
         pkt_id = db.insert_packet(
             self._conn,
@@ -306,6 +354,7 @@ class NetVibeSniffer:
                     "protocol": proto,
                     "payload_len": payload_len,
                     "direction": direction,
+                    "label": label,
                 },
             )
 
