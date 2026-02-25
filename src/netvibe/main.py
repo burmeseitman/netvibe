@@ -12,15 +12,15 @@ Split-screen Rich dashboard:
 Usage
 -----
     # Normal capture (requires Administrator / root + Npcap on Windows)
-    python main.py
-    python main.py --interface "Wi-Fi"
-    python main.py --interface eth0 --refresh 1 --log-lines 30
+    netvibe
+    netvibe --interface "Wi-Fi"
+    netvibe --interface eth0 --refresh 1 --log-lines 30
 
     # Demo mode — no sniffing, injects fake traffic so you can see the UI
-    python main.py --demo
+    netvibe --demo
 
     # List available interfaces and exit
-    python main.py --list-interfaces
+    netvibe --list-interfaces
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Event
 
 # ── Rich imports ────────────────────────────────────────────────────────────
@@ -45,8 +46,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-import database as db
-from sniffer import (
+from netvibe import database as db
+from netvibe.sniffer import (
     NetVibeSniffer,
     DOMAIN_CATALOG,
     DOMAIN_LABELS,
@@ -59,7 +60,11 @@ from sniffer import (
 # Logging (file only — Rich owns the terminal)
 # ---------------------------------------------------------------------------
 
-LOG_FILE = "netvibe.log"
+# Get user's home directory for log file
+LOG_DIR = Path.home() / ".netvibe"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "netvibe.log"
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -144,7 +149,8 @@ def build_header(stats, interface: str, refresh: float, demo: bool = False) -> P
     txt.append(str(stats.total_alerts), style="bold bright_red")
     txt.append("  │  ", style="dim")
     txt.append("Ctrl+C", style="bold white")
-    txt.append(" to quit  │  log → netvibe.log", style="dim")
+    txt.append(" to quit  │  log → ", style="dim")
+    txt.append("~/.netvibe/netvibe.log", style="dim")
 
     border = "on grey7"
     return Panel(txt, style=border, padding=(0, 1))
@@ -257,7 +263,7 @@ def build_log_table(conn, log_buf: LiveLogBuffer, n_rows: int) -> Panel:
     return Panel(
         table,
         title="[bold white] Live Packet Log [/bold white]",
-        subtitle=f"[dim]latest {n_rows} entries · source: netvibe.db[/dim]",
+        subtitle=f"[dim]latest {n_rows} entries · source: ~/.netvibe/netvibe.db[/dim]",
         border_style="white",
         padding=(0, 0),
     )
@@ -332,7 +338,7 @@ def preflight_check(interface: str | None) -> bool:
             else:
                 hint = (
                     "Install Npcap: https://npcap.com/  (check WinPcap API-compatible mode)\n"
-                    "💡 Run 'python setup_npcap.py' for automated setup"
+                    "💡 Run 'netvibe-setup' for automated setup"
                 )
         else:
             label = "libpcap"
@@ -341,7 +347,7 @@ def preflight_check(interface: str | None) -> bool:
             else:
                 hint = (
                     "Install libpcap development headers\n"
-                    "💡 Run 'python setup_npcap.py' for installation instructions"
+                    "💡 Run 'netvibe-setup' for installation instructions"
                 )
         checks.append((label, has_pcap, hint))
     except Exception as e:
@@ -381,8 +387,8 @@ def preflight_check(interface: str | None) -> bool:
         console.print(Panel(
             "[bold yellow]🔧 Setup Assistance[/bold yellow]\n\n"
             "If you're having trouble with the pre-flight checks:\n\n"
-            "1. [cyan]Windows users[/cyan]: Run 'python setup_npcap.py' for automated Npcap setup\n"
-            "2. [cyan]Linux users[/cyan]: Run 'python setup_npcap.py' for libpcap installation instructions\n"
+            "1. [cyan]Windows users[/cyan]: Run 'netvibe-setup' for automated Npcap setup\n"
+            "2. [cyan]Linux users[/cyan]: Run 'netvibe-setup' for libpcap installation instructions\n"
             "3. [cyan]macOS users[/cyan]: Install Xcode Command Line Tools with 'xcode-select --install'\n"
             "4. [cyan]All users[/cyan]: Ensure you're running as Administrator/root\n\n"
             "💡 For detailed troubleshooting, see: https://github.com/your-repo/netvibe/wiki/Troubleshooting",
@@ -599,6 +605,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print available network interfaces and exit.",
     )
+    p.add_argument(
+        "--version", "-v",
+        action="version",
+        version=f"%(prog)s {__import__('netvibe').__version__}",
+    )
     return p.parse_args()
 
 
@@ -655,16 +666,16 @@ def main() -> None:
             console.print(
                 "[bold red]Pre-flight failed.[/bold red]  "
                 "Fix the issues above, then re-run.\n\n"
-                "  [dim]Tip: run [white]python main.py --demo[/white] "
+                "  [dim]Tip: run [white]netvibe --demo[/white] "
                 "to preview the UI without Npcap.[/dim]\n"
             )
             
             # Offer automated setup assistance
             console.print(Panel(
                 "[bold]🔧 Need help with setup?[/bold]\n\n"
-                "1. [cyan]Automated setup[/cyan]: Run 'python setup_npcap.py' for guided installation\n"
+                "1. [cyan]Automated setup[/cyan]: Run 'netvibe-setup' for guided installation\n"
                 "2. [cyan]Manual setup[/cyan]: Follow the instructions above\n"
-                "3. [cyan]Demo mode[/cyan]: Run 'python main.py --demo' to see the UI without capture\n\n"
+                "3. [cyan]Demo mode[/cyan]: Run 'netvibe --demo' to see the UI without capture\n\n"
                 "💡 The setup script can automatically download and guide Npcap installation on Windows, "
                 "or provide detailed instructions for Linux/macOS.",
                 border_style="blue"
@@ -677,7 +688,7 @@ def main() -> None:
                 if response in ['y', 'yes']:
                     console.print("\n🚀 Launching automated setup assistant...\n")
                     import subprocess
-                    subprocess.run([sys.executable, "setup_npcap.py"])
+                    subprocess.run([sys.executable, "-m", "netvibe.setup_npcap"])
                     console.print("\n📋 Setup completed. Please re-run NetVibe.")
                     sys.exit(0)
             except (KeyboardInterrupt, EOFError):
@@ -760,8 +771,8 @@ def main() -> None:
     summary.add_column(style="bright_white")
     summary.add_row("Total packets captured", str(final.total_packets))
     summary.add_row("Total alerts fired",     str(final.total_alerts))
-    summary.add_row("Database",               "netvibe.db")
-    summary.add_row("Log file",               LOG_FILE)
+    summary.add_row("Database",               "~/.netvibe/netvibe.db")
+    summary.add_row("Log file",               "~/.netvibe/netvibe.log")
     summary.add_row("Session ID",             str(final.session_id))
     console.print(summary)
     console.print()
