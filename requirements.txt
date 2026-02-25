@@ -1,0 +1,7 @@
+# NetVibe - Terminal Network Monitor
+# Install with:  pip install -r requirements.txt
+#
+# NOTE: On Windows, Scapy requires Npcap (https://npcap.com/) to be installed.
+#       On Linux/macOS, run the script as root / with sudo.
+
+scapy>=2.5.0
