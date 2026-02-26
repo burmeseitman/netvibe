@@ -52,10 +52,10 @@ web = [
 netvibe = "netvibe.web_app:main"
 
 [project.urls]
-Homepage = "https://github.com/your-repo/netvibe"
-Documentation = "https://github.com/your-repo/netvibe#readme"
-Repository = "https://github.com/your-repo/netvibe.git"
-Issues = "https://github.com/your-repo/netvibe/issues"
+Homepage = "https://github.com/burmeseitman/netvibe"
+Documentation = "https://github.com/burmeseitman/netvibe#readme"
+Repository = "https://github.com/burmeseitman/netvibe.git"
+Issues = "https://github.com/burmeseitman/netvibe/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
