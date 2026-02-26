@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "netvibe"
 version = "1.0.0"
-description = "Terminal-based network monitor for AI service traffic"
+description = "Web-based network monitor for AI service traffic"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -26,10 +26,9 @@ classifiers = [
     "Topic :: System :: Networking :: Monitoring",
     "Topic :: Security",
 ]
-keywords = ["network", "monitor", "ai", "traffic", "terminal", "tui"]
+keywords = ["network", "monitor", "ai", "traffic", "web", "streamlit"]
 dependencies = [
     "scapy>=2.5.0",
-    "rich>=13.7.0",
 ]
 
 [project.optional-dependencies]
@@ -42,10 +41,15 @@ security = [
     "pip-audit>=2.6.0",
     "safety>=2.3.0",
 ]
+web = [
+    "streamlit>=1.30.0",
+    "plotly>=5.18.0",
+    "pandas>=2.0.0",
+    "streamlit-autorefresh>=1.0.0",
+]
 
 [project.scripts]
-netvibe = "netvibe.main:main"
-netvibe-setup = "netvibe.setup_npcap:main"
+netvibe = "netvibe.web_app:main"
 
 [project.urls]
 Homepage = "https://github.com/your-repo/netvibe"
