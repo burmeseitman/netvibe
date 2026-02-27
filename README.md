@@ -8,12 +8,8 @@
   </p>
 
   <br />
-  
-  <img src="docs/assets/screenshot.png" alt="NetVibe Dashboard Screenshot" width="800" style="border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);"/>
 
-  <br /><br />
-
-  <img src="docs/assets/runtime.gif" alt="NetVibe Runtime Animation" width="800" style="border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);"/>
+  <img src="docs/assets/runtime.webp" alt="NetVibe Runtime Animation" width="800" style="border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);"/>
 
   <br /><br />
 
