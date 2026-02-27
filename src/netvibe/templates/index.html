@@ -1,0 +1,1248 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NetVibe | AI Traffic Intel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        font-family: "Outfit", sans-serif;
+        background-color: #0d1117;
+        color: #f0f6fc;
+      }
+      .neon-border {
+        border: 1px solid rgba(56, 189, 248, 0.3);
+        box-shadow: 0 0 15px rgba(56, 189, 248, 0.1);
+      }
+      .neon-glow:hover {
+        box-shadow: 0 0 25px rgba(56, 189, 248, 0.25);
+        border-color: rgba(56, 189, 248, 0.6);
+      }
+      .glass {
+        background: rgba(22, 27, 34, 0.7);
+        backdrop-filter: blur(10px);
+      }
+      .neon-text-blue {
+        color: #38bdf8;
+        text-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+      }
+      .neon-text-green {
+        color: #10b981;
+        text-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+      }
+      ::-webkit-scrollbar {
+        width: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #0d1117;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #30363d;
+        border-radius: 10px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #38bdf8;
+      }
+      @keyframes pulse-slow {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.7;
+        }
+      }
+      .animate-pulse-slow {
+        animation: pulse-slow 3s infinite;
+      }
+      /* Intel Feed table rows — static border, no transition */
+      #log-body tr {
+        border-bottom: 1px solid rgb(30 41 59); /* slate-800 */
+      }
+
+      /* ── Radar Splash ── */
+      #splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: #0d1117;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 32px;
+        transition: opacity 0.7s ease, visibility 0.7s ease;
+      }
+      #splash.hidden-splash {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .radar-wrap {
+        position: relative;
+        width: 240px;
+        height: 240px;
+      }
+      /* Rings */
+      .radar-ring {
+        position: absolute;
+        border-radius: 50%;
+        border: 1px solid rgba(56,189,248,0.25);
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+      }
+      .radar-ring:nth-child(1) { width: 60px;  height: 60px; }
+      .radar-ring:nth-child(2) { width: 110px; height: 110px; }
+      .radar-ring:nth-child(3) { width: 160px; height: 160px; }
+      .radar-ring:nth-child(4) { width: 210px; height: 210px; border-color: rgba(56,189,248,0.45); }
+      /* Cross-hairs */
+      .radar-cross {
+        position: absolute;
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        width: 220px; height: 220px;
+      }
+      .radar-cross::before,
+      .radar-cross::after {
+        content: '';
+        position: absolute;
+        background: rgba(56,189,248,0.15);
+      }
+      .radar-cross::before { width: 1px; height: 100%; left: 50%; }
+      .radar-cross::after  { height: 1px; width: 100%; top: 50%; }
+      /* Sweep — full-circle disc rotating around radar center */
+      @keyframes radar-sweep {
+        from { transform: translate(-50%, -50%) rotate(0deg); }
+        to   { transform: translate(-50%, -50%) rotate(360deg); }
+      }
+      .radar-sweep {
+        position: absolute;
+        top: 50%; left: 50%;
+        width: 210px; height: 210px;
+        border-radius: 50%;
+        transform: translate(-50%, -50%) rotate(0deg);
+        animation: radar-sweep 2.4s linear infinite;
+        background: conic-gradient(
+          from 0deg at center,
+          rgba(56,189,248,0.55) 0deg,
+          rgba(56,189,248,0.15) 50deg,
+          transparent 80deg,
+          transparent 360deg
+        );
+      }
+      /* Sweep tip dot */
+      @keyframes sweep-dot {
+        from { transform: translate(-50%, -50%) rotate(0deg) translateX(105px); }
+        to   { transform: translate(-50%, -50%) rotate(360deg) translateX(105px); }
+      }
+      .radar-dot {
+        position: absolute;
+        top: 50%; left: 50%;
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        background: #38bdf8;
+        box-shadow: 0 0 8px 3px rgba(56,189,248,0.8);
+        animation: sweep-dot 2.4s linear infinite;
+      }
+      /* Blips */
+      @keyframes blip {
+        0%,100% { opacity: 0; transform: translate(-50%,-50%) scale(0.5); }
+        50%      { opacity: 1; transform: translate(-50%,-50%) scale(1.2); }
+      }
+      .radar-blip {
+        position: absolute;
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        background: #10b981;
+        box-shadow: 0 0 8px 3px rgba(16,185,129,0.7);
+        animation: blip 2s ease-in-out infinite;
+      }
+      /* Status text blink */
+      @keyframes blink {
+        0%,100% { opacity: 1; } 50% { opacity: 0.3; }
+      }
+      .splash-status { animation: blink 1.4s ease-in-out infinite; }
+    </style>
+  </head>
+  <body class="min-h-screen p-4 md:p-8">
+
+    <!-- ══ RADAR SPLASH SCREEN ══ -->
+    <div id="splash">
+      <div class="radar-wrap">
+        <!-- Rings -->
+        <div class="radar-ring"></div>
+        <div class="radar-ring"></div>
+        <div class="radar-ring"></div>
+        <div class="radar-ring"></div>
+        <!-- Cross-hairs -->
+        <div class="radar-cross"></div>
+        <!-- Sweep -->
+        <div class="radar-sweep"></div>
+        <!-- Sweep tip -->
+        <div class="radar-dot"></div>
+        <!-- Centered Antenna -->
+        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:10;display:flex;flex-direction:column;align-items:center;">
+          <svg width="36" height="48" viewBox="0 0 36 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Signal arcs -->
+            <path d="M6 18 Q18 4 30 18" stroke="#38bdf8" stroke-width="1.5" fill="none" stroke-linecap="round" opacity="0.5"/>
+            <path d="M10 22 Q18 11 26 22" stroke="#38bdf8" stroke-width="1.5" fill="none" stroke-linecap="round" opacity="0.75"/>
+            <!-- Mast -->
+            <line x1="18" y1="24" x2="18" y2="40" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>
+            <!-- Base crossbar -->
+            <line x1="10" y1="40" x2="26" y2="40" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>
+            <!-- Legs -->
+            <line x1="10" y1="40" x2="14" y2="46" stroke="#38bdf8" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="26" y1="40" x2="22" y2="46" stroke="#38bdf8" stroke-width="1.5" stroke-linecap="round"/>
+            <!-- Tip glow dot -->
+            <circle cx="18" cy="23" r="2.5" fill="#38bdf8" filter="url(#glow)"/>
+            <defs>
+              <filter id="glow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            </defs>
+          </svg>
+        </div>
+        <!-- Blips -->
+        <div class="radar-blip" style="top:32%; left:58%; animation-delay:0.3s"></div>
+        <div class="radar-blip" style="top:62%; left:38%; animation-delay:1.1s"></div>
+        <div class="radar-blip" style="top:44%; left:72%; animation-delay:0.7s"></div>
+        <div class="radar-blip" style="top:70%; left:60%; animation-delay:1.6s"></div>
+      </div>
+
+      <!-- Labels -->
+      <div style="text-align:center;">
+        <div style="font-size:2rem;font-weight:700;letter-spacing:0.08em;">
+          <span style="color:#38bdf8;text-shadow:0 0 10px rgba(56,189,248,0.6);">NET</span>VIBE
+        </div>
+        <div style="font-size:0.65rem;letter-spacing:0.3em;color:#475569;margin-top:4px;">AI TRAFFIC INTELLIGENCE</div>
+      </div>
+
+      <div style="text-align:center;">
+        <div class="splash-status" style="font-size:0.7rem;letter-spacing:0.2em;color:#38bdf8;font-weight:600;">SCANNING NETWORK INTERFACES…</div>
+        <div id="splash-iface-count" style="font-size:0.6rem;color:#475569;margin-top:6px;">Initialising sensors</div>
+      </div>
+    </div>
+
+    <!-- ══ MAIN DASHBOARD (hidden until splash dismisses) ══ -->
+    <div id="main-content" style="display:none;">
+    <!-- Header -->
+    <header
+      class="max-w-7xl mx-auto mb-8 flex flex-col md:flex-row justify-between items-center gap-4"
+    >
+      <div class="flex items-center gap-5">
+        <div>
+          <h1 class="text-4xl font-bold tracking-tight mb-1">
+            <span class="neon-text-blue">NET</span>VIBE
+          </h1>
+          <p
+            class="text-xs font-semibold tracking-widest text-slate-500 uppercase animate-pulse-slow"
+          >
+            Real-Time Neural Network Telemetry
+          </p>
+        </div>
+        <a href="https://github.com/burmeseitman/netvibe" target="_blank" rel="noopener noreferrer" class="text-slate-500 hover:text-white transition-colors" title="View Source on GitHub">
+          <svg height="28" width="28" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path>
+          </svg>
+        </a>
+      </div>
+      <div
+        class="flex items-center gap-6 glass px-6 py-3 rounded-2xl neon-border"
+      >
+        <div class="text-center">
+          <p class="text-[10px] text-slate-500 uppercase font-bold mb-1">
+            Status
+          </p>
+          <div class="flex items-center gap-2">
+            <span
+              id="status-dot"
+              class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]"
+            ></span>
+            <span id="status-text" class="text-xs font-bold text-emerald-500"
+              >ACTIVE</span
+            >
+          </div>
+        </div>
+        <div class="w-px h-8 bg-slate-800"></div>
+        <div class="text-center">
+          <p class="text-[10px] text-slate-500 uppercase font-bold mb-1">
+            Uptime
+          </p>
+          <span id="uptime" class="text-xs font-mono font-bold text-slate-300"
+            >00:00:00</span
+          >
+        </div>
+      </div>
+    </header>
+
+    <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <!-- Sidebar Control Panel -->
+      <aside class="lg:col-span-3 space-y-6">
+        <div class="glass p-6 rounded-2xl neon-border">
+          <h4 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Control Center</h4>
+          
+          <div class="space-y-6">
+            <!-- Interface Selection -->
+            <div>
+              <label class="text-[10px] text-slate-500 uppercase font-bold block mb-2">Network Interface</label>
+              <select id="iface-select" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-300 outline-none focus:border-sky-500 transition-all">
+                <option value="">Loading interfaces…</option>
+              </select>
+            </div>
+
+            <!-- Start/Stop Buttons -->
+            <div class="grid grid-cols-2 gap-3">
+              <button id="btn-start" onclick="startSniffer()" class="py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/50 text-emerald-500 text-xs font-bold hover:bg-emerald-500/20 active:scale-95 transition-all">
+                ▶ START
+              </button>
+              <button id="btn-stop" onclick="stopSniffer()" disabled class="py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-600 text-xs font-bold cursor-not-allowed transition-all">
+                ■ STOP
+              </button>
+            </div>
+
+            <div class="h-px bg-slate-800"></div>
+
+            <!-- Settings -->
+            <div class="space-y-4">
+              <div>
+                <div class="flex justify-between mb-2">
+                  <label class="text-[10px] text-slate-500 uppercase font-bold">Refresh Interval</label>
+                  <span id="interval-val" class="text-[10px] text-sky-400 font-mono">2s</span>
+                </div>
+                <input type="range" id="refresh-interval" min="1" max="10" value="2" class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-sky-500">
+              </div>
+
+              <div>
+                <div class="flex justify-between mb-2">
+                  <label class="text-[10px] text-slate-500 uppercase font-bold">Max Log Entries</label>
+                  <span id="log-limit-val" class="text-[10px] text-sky-400 font-mono">50</span>
+                </div>
+                <input type="range" id="log-limit" min="10" max="100" step="10" value="50" class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-sky-500">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Telemetry Rate -->
+        <div class="glass p-6 rounded-2xl neon-border hidden lg:block">
+           <p class="text-[10px] text-slate-500 uppercase font-bold mb-4">Live Telemetry Rate</p>
+           <div class="flex items-end gap-1">
+             <div id="rate-bar" class="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                <div id="rate-fill" class="bg-sky-500 h-full transition-all duration-300" style="width: 0%"></div>
+             </div>
+           </div>
+        </div>
+
+        <!-- Feed Filters -->
+        <div class="glass p-5 rounded-2xl neon-border hidden lg:block">
+          <div class="flex justify-between items-center mb-3 cursor-pointer" onclick="document.getElementById('filter-body').classList.toggle('hidden')">
+            <p class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">&#9001; Feed Filters</p>
+            <span class="text-slate-600 text-[10px]">tap to fold</span>
+          </div>
+          <div id="filter-body" class="space-y-4">
+            <!-- AI Agents -->
+            <div>
+              <div class="flex justify-between items-center mb-2">
+                <p class="text-[9px] text-sky-400 uppercase font-bold tracking-widest">AI Agents</p>
+                <div class="flex items-center gap-2">
+                  <button onclick="openAgentModal()" class="text-[9px] text-sky-500 hover:text-sky-300 mr-2 border border-sky-500/30 px-1.5 py-0.5 rounded">⚙️ MANAGE</button>
+                  <span>
+                    <button onclick="toggleFilterGroup('ai',true)"  class="text-[9px] text-slate-500 hover:text-sky-400 mr-1">ALL</button>
+                    <button onclick="toggleFilterGroup('ai',false)" class="text-[9px] text-slate-500 hover:text-red-400">NONE</button>
+                  </span>
+                </div>
+              </div>
+              <div id="ai-filters-grid" class="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                <!-- Dynamically populated from /api/agents -->
+              </div>
+            </div>
+            <!-- Network -->
+            <div>
+              <div class="flex justify-between items-center mb-2">
+                <p class="text-[9px] text-emerald-400 uppercase font-bold tracking-widest">Network</p>
+                <span>
+                  <button onclick="toggleFilterGroup('net',true)"  class="text-[9px] text-slate-500 hover:text-sky-400 mr-1">ALL</button>
+                  <button onclick="toggleFilterGroup('net',false)" class="text-[9px] text-slate-500 hover:text-red-400">NONE</button>
+                </span>
+              </div>
+              <div class="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                <label class="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer"><input type="checkbox" class="filter-cb net-cb accent-emerald-500" value="HTTPS" checked> HTTPS</label>
+                <label class="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer"><input type="checkbox" class="filter-cb net-cb accent-emerald-500" value="DNS Query" checked> DNS</label>
+                <label class="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer"><input type="checkbox" class="filter-cb net-cb accent-emerald-500" value="HTTP" checked> HTTP</label>
+                <label class="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer"><input type="checkbox" class="filter-cb net-cb accent-emerald-500" value="QUIC" checked> QUIC</label>
+                <label class="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer"><input type="checkbox" class="filter-cb net-cb accent-emerald-500" value="General" checked> General</label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Dashboard Grid -->
+      <div class="lg:col-span-9 space-y-6">
+        <!-- Top Metrics -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div class="glass p-6 rounded-2xl neon-border neon-glow transition-all">
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Total Packets</p>
+            <h3 id="total-packets" class="text-3xl font-bold neon-text-blue font-mono">0</h3>
+          </div>
+          <div class="glass p-6 rounded-2xl neon-border neon-glow transition-all">
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">AI Intel Hits</p>
+            <h3 id="ai-hits" class="text-3xl font-bold text-amber-400 font-mono">0</h3>
+          </div>
+          <div class="glass p-6 rounded-2xl neon-border neon-glow transition-all">
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Unique IP Sources</p>
+            <h3 id="unique-sources" class="text-3xl font-bold text-emerald-400 font-mono">0</h3>
+          </div>
+        </div>
+
+        <!-- Charts Row -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="glass p-6 rounded-2xl neon-border">
+            <h4 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">AI Service Ecosystem</h4>
+            <div class="relative h-64">
+              <canvas id="donutChart"></canvas>
+            </div>
+          </div>
+          <div class="glass p-6 rounded-2xl neon-border">
+            <h4 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Traffic Intensity</h4>
+            <div class="relative h-64">
+              <canvas id="lineChart"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Neural Intel Feed — full width -->
+        <div class="glass rounded-2xl neon-border overflow-hidden">
+          <!-- Header row -->
+          <div class="p-4 border-b border-slate-800 flex flex-wrap justify-between items-center gap-3">
+            <div class="flex items-center gap-3">
+              <h4 class="text-sm font-bold text-slate-400 uppercase tracking-widest">Neural Intel Feed</h4>
+              <span id="feed-mode-badge" class="px-2 py-0.5 bg-emerald-500/15 text-emerald-400 text-[9px] font-bold rounded uppercase">● Live</span>
+              <div id="demo-badge" class="hidden px-2 py-1 bg-amber-500/20 text-amber-500 text-[10px] font-bold rounded uppercase">Demo Mode</div>
+            </div>
+            <!-- Search toggle button -->
+            <button onclick="toggleSearchPanel()" class="flex items-center gap-1.5 text-[10px] text-slate-400 hover:text-sky-400 border border-slate-700 hover:border-sky-500 rounded-lg px-3 py-1.5 transition-all">
+              🔍 Search History
+            </button>
+          </div>
+
+          <!-- Search Panel (hidden by default) -->
+          <div id="search-panel" class="hidden border-b border-slate-800 p-4 bg-slate-900/40">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+              <!-- Text query -->
+              <div class="md:col-span-3">
+                <input id="srch-q" type="text" placeholder="Search IP address or AI agent name…"
+                  class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-300 outline-none focus:border-sky-500 transition-all placeholder-slate-600" />
+              </div>
+              <!-- Date From -->
+              <div>
+                <label class="text-[9px] text-slate-500 uppercase font-bold block mb-1">From</label>
+                <input id="srch-from" type="datetime-local"
+                  class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-300 outline-none focus:border-sky-500 transition-all" />
+              </div>
+              <!-- Date To -->
+              <div>
+                <label class="text-[9px] text-slate-500 uppercase font-bold block mb-1">To</label>
+                <input id="srch-to" type="datetime-local"
+                  class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-300 outline-none focus:border-sky-500 transition-all" />
+              </div>
+              <!-- Filters -->
+              <div>
+                <label class="text-[9px] text-transparent uppercase font-bold block mb-1">Filters</label>
+                <div class="flex gap-2 h-[34px]">
+                  <select id="srch-proto" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 text-xs text-slate-300 outline-none focus:border-sky-500">
+                    <option value="">All Protocols</option>
+                    <option value="TCP">TCP</option>
+                    <option value="UDP">UDP</option>
+                  </select>
+                  <select id="srch-dir" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 text-xs text-slate-300 outline-none focus:border-sky-500">
+                    <option value="">All Directions</option>
+                    <option value="outbound">Outbound</option>
+                    <option value="inbound">Inbound</option>
+                  </select>
+                </div>
+              </div>
+
+            </div>
+            <div class="flex items-center gap-3">
+              <button onclick="runSearch()" class="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold rounded-lg transition-all">Search</button>
+              <button onclick="clearSearch()" class="px-4 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-bold rounded-lg transition-all">Clear / Live</button>
+              <span id="srch-count" class="text-[10px] text-slate-500"></span>
+            </div>
+          </div>
+
+          <div class="overflow-x-auto" style="max-height: 400px; overflow-y: auto;">
+            <table class="w-full text-left text-[10px]">
+              <thead class="bg-slate-900/50 text-slate-500 uppercase font-bold sticky top-0 backdrop-blur-md">
+                <tr>
+                  <th class="p-3">Time</th>
+                  <th class="p-3">Device</th>
+                  <th class="p-3">Agent</th>
+                  <th class="p-3">Direction</th>
+                  <th class="p-3">Source → Target</th>
+                  <th class="p-3">Proto</th>
+                  <th class="p-3">Total Size</th>
+                  <th class="p-3">Pkts</th>
+                  <th class="p-3">Duration</th>
+                  <th class="p-3 text-right">Status / Note</th>
+                </tr>
+              </thead>
+              <tbody id="log-body">
+                <!-- Logs -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <footer class="max-w-7xl mx-auto mt-6 text-center text-[10px] text-slate-500 pb-4 uppercase tracking-widest font-bold">
+      <p>&copy; 2026 NetVibe. Released under MIT License.</p>
+    </footer>
+
+    <!-- Manage Agents Modal -->
+    <div id="agent-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm">
+      <div class="glass w-full max-w-lg rounded-2xl neon-border overflow-hidden flex flex-col max-h-[90vh]">
+        <div class="p-4 border-b border-slate-800 flex justify-between items-center">
+          <div class="flex items-center gap-3">
+            <h3 class="text-sm font-bold text-sky-400 uppercase tracking-widest">Manage AI Agents</h3>
+            <button onclick="exportAgents()" class="text-[9px] text-emerald-500 hover:text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded uppercase font-bold">📥 Export Packet</button>
+          </div>
+          <button onclick="closeAgentModal()" class="text-slate-500 hover:text-white">✕</button>
+        </div>
+        
+        <div class="p-4 overflow-y-auto flex-1">
+          <table class="w-full text-left text-xs mb-4">
+            <thead class="text-slate-500 uppercase font-bold border-b border-slate-800">
+              <tr>
+                <th class="py-2">Display Name</th>
+                <th class="py-2">Domain Keyword</th>
+                <th class="py-2 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody id="agent-list-body" class="text-slate-300">
+              <!-- Agents render here -->
+            </tbody>
+          </table>
+
+          <div class="bg-slate-800/50 p-3 rounded-lg border border-slate-700">
+            <h4 class="text-[10px] font-bold text-emerald-400 uppercase mb-2 tracking-widest">+ Add New Agent</h4>
+            <div class="flex gap-2">
+              <input type="text" id="new-agent-name" placeholder="e.g. AcmeAI" class="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs outline-none focus:border-sky-500">
+              <input type="text" id="new-agent-kw" placeholder="e.g. api.acme.ai" class="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs outline-none focus:border-sky-500">
+              <button onclick="addAgent()" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded transition-colors">Add</button>
+            </div>
+          </div>
+        </div>
+        
+        <div class="p-4 border-t border-slate-800 flex justify-end">
+          <button onclick="closeAgentModal()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold rounded-lg transition-colors">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let trafficHistory = Array(20).fill(0);
+      const timeLabels = Array(20).fill("");
+      const trafficData = Array(20).fill(0);
+
+      function fmt_bytes(bytes) {
+        if (!bytes) return "0 B";
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        let i = 0;
+        while (bytes >= 1024 && i < units.length - 1) {
+          bytes /= 1024;
+          i++;
+        }
+        return bytes.toFixed(1) + " " + units[i];
+      }
+
+      let refreshIntervalTimer;
+      let intensityIntervalTimer;
+      let logLimit = 50;
+      let currentAgents = [];
+
+      // --- AI Agent Manager ---
+      async function loadAgents() {
+        try {
+          const res = await fetch("/api/agents");
+          const data = await res.json();
+          if (data.status === "ok") {
+            currentAgents = data.agents;
+            renderAgentFilters();
+            renderAgentTable();
+          }
+        } catch (e) {
+          console.error("Failed to load agents", e);
+        }
+      }
+
+      function renderAgentFilters() {
+        const grid = document.getElementById("ai-filters-grid");
+        grid.innerHTML = "";
+        
+        // Filter out duplicate names (e.g. OpenAI vs chatgpt both mapping to OpenAI)
+        const agentNames = [...new Set(currentAgents.map(a => a.name))].sort();
+        
+        agentNames.forEach(name => {
+          const label = document.createElement("label");
+          label.className = "flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer";
+          label.innerHTML = `<input type="checkbox" class="filter-cb ai-cb accent-sky-500" value="${name}" checked> ${name}`;
+          grid.appendChild(label);
+        });
+      }
+
+      let editingAgentId = null;
+
+      function renderAgentTable() {
+        const tbody = document.getElementById("agent-list-body");
+        tbody.innerHTML = "";
+        currentAgents.forEach(agent => {
+          const tr = document.createElement("tr");
+          tr.className = "border-b border-slate-800/50 hover:bg-slate-800/30";
+          
+          if (editingAgentId === agent.id) {
+            tr.innerHTML = `
+              <td class="py-2"><input type="text" id="edit-name-${agent.id}" value="${agent.name}" class="w-full bg-slate-900 border border-sky-500 rounded px-2 py-1 text-xs outline-none"></td>
+              <td class="py-2"><input type="text" id="edit-kw-${agent.id}" value="${agent.domain_keyword}" class="w-full bg-slate-900 border border-sky-500 rounded px-2 py-1 text-xs outline-none"></td>
+              <td class="py-2 text-right flex justify-end gap-1">
+                <button onclick="saveAgent(${agent.id})" class="text-emerald-400 hover:text-emerald-300 text-[9px] uppercase font-bold px-1.5 py-0.5 rounded border border-emerald-500/30">Save</button>
+                <button onclick="cancelEdit()" class="text-slate-400 hover:text-slate-300 text-[9px] uppercase font-bold px-1.5 py-0.5 rounded border border-slate-500/30">X</button>
+              </td>
+            `;
+          } else {
+            tr.innerHTML = `
+              <td class="py-2.5 font-bold text-sky-400">${agent.name}</td>
+              <td class="py-2.5 font-mono text-slate-400 text-[10px]">${agent.domain_keyword}</td>
+              <td class="py-2.5 text-right">
+                <button onclick="editAgent(${agent.id})" class="text-sky-400 hover:text-sky-300 text-[10px] uppercase font-bold px-2 py-1 rounded border border-sky-500/30 mr-1">Edit</button>
+                <button onclick="deleteAgent(${agent.id})" class="text-red-400 hover:text-red-300 text-[10px] uppercase font-bold px-2 py-1 rounded border border-red-500/30 hover:border-red-400/50 transition-colors">Del</button>
+              </td>
+            `;
+          }
+          tbody.appendChild(tr);
+        });
+      }
+
+      function editAgent(id) {
+        editingAgentId = id;
+        renderAgentTable();
+      }
+
+      function cancelEdit() {
+        editingAgentId = null;
+        renderAgentTable();
+      }
+
+      async function saveAgent(id) {
+        const name = document.getElementById(`edit-name-${id}`).value.trim();
+        const kw   = document.getElementById(`edit-kw-${id}`).value.trim();
+        if (!name || !kw) return;
+
+        try {
+          const res = await fetch(`/api/agents/${id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: name, domain_keyword: kw })
+          });
+          const data = await res.json();
+          if (data.status === "ok") {
+            editingAgentId = null;
+            await loadAgents();
+          } else {
+            alert("Error: " + data.message);
+          }
+        } catch (e) {
+          alert("Failed to update agent.");
+        }
+      }
+
+      async function addAgent() {
+        const nameInput = document.getElementById("new-agent-name");
+        const kwInput = document.getElementById("new-agent-kw");
+        const name = nameInput.value.trim();
+        const kw = kwInput.value.trim();
+
+        if (!name || !kw) {
+          alert("Please provide both a Display Name and a Domain Keyword.");
+          return;
+        }
+
+        try {
+          const res = await fetch("/api/agents", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: name, domain_keyword: kw })
+          });
+          const data = await res.json();
+          if (data.status === "ok") {
+            nameInput.value = "";
+            kwInput.value = "";
+            await loadAgents();
+            // alert("Agent added successfully. Please STOP and START the sniffer to monitor the new domain.");
+            // No longer need alert since it reloads automatically now
+          } else {
+            alert("Error adding agent: " + data.message);
+          }
+        } catch (e) {
+          alert("Failed to add agent.");
+        }
+      }
+
+      async function deleteAgent(id) {
+        if (!confirm("Are you sure you want to delete this AI agent?")) return;
+        try {
+          const res = await fetch(`/api/agents/${id}`, { method: "DELETE" });
+          const data = await res.json();
+          if (data.status === "ok") {
+            await loadAgents();
+            // alert("Agent removed. Please STOP and START the sniffer to apply changes.");
+          } else {
+            alert("Error removing agent: " + data.message);
+          }
+        } catch (e) {
+          alert("Failed to remove agent.");
+        }
+      }
+
+      async function exportAgents() {
+        try {
+          const res = await fetch("/api/agents/export");
+          const data = await res.json();
+          const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "netvibe-ai-agents.json";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          alert("Failed to export agents.");
+        }
+      }
+
+      function openAgentModal() {
+        document.getElementById("agent-modal").classList.remove("hidden");
+        loadAgents(); // refresh list when opening
+      }
+
+      function closeAgentModal() {
+        document.getElementById("agent-modal").classList.add("hidden");
+      }
+
+      function initCharts() {
+        const donutCtx = document.getElementById("donutChart").getContext("2d");
+        donutChart = new Chart(donutCtx, {
+          type: "doughnut",
+          data: {
+            labels: [],
+            datasets: [{
+              data: [],
+              backgroundColor: ["#38bdf8", "#818cf8", "#a78bfa", "#f472b6", "#fb7185", "#fbbf24", "#34d399"].map((c) => c + "cc"),
+              borderColor: "#161b22",
+              borderWidth: 2,
+              hoverOffset: 15,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: { color: "#94a3b8", font: { size: 10, family: "Outfit" }, boxWidth: 10, padding: 15 },
+              },
+            },
+            cutout: "70%",
+          },
+        });
+
+        const lineCtx = document.getElementById("lineChart").getContext("2d");
+        const gradient = lineCtx.createLinearGradient(0, 0, 0, 300);
+        gradient.addColorStop(0, "rgba(56, 189, 248, 0.3)");
+        gradient.addColorStop(1, "rgba(56, 189, 248, 0)");
+
+        lineChart = new Chart(lineCtx, {
+          type: "line",
+          data: {
+            labels: timeLabels,
+            datasets: [{
+              label: "Packets",
+              data: trafficHistory,
+              borderColor: "#38bdf8",
+              backgroundColor: gradient,
+              borderWidth: 2,
+              tension: 0.45,
+              fill: true,
+              pointRadius: 0,
+              pointHoverRadius: 5,
+              pointBackgroundColor: "#38bdf8",
+              pointBorderColor: "#fff",
+              pointBorderWidth: 1.5,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              intersect: false,
+              mode: 'index',
+            },
+            plugins: { 
+              legend: { display: false },
+              tooltip: {
+                backgroundColor: 'rgba(13, 17, 23, 0.9)',
+                titleFont: { family: 'Outfit', size: 11 },
+                bodyFont: { family: 'Outfit', size: 11 },
+                padding: 10,
+                borderColor: 'rgba(56, 189, 248, 0.2)',
+                borderWidth: 1,
+                displayColors: false,
+                callbacks: {
+                  label: (ctx) => `${ctx.parsed.y} Packets/sec`
+                }
+              }
+            },
+            scales: {
+              x: { display: false },
+              y: {
+                beginAtZero: true,
+                grid: { 
+                  color: "rgba(255, 255, 255, 0.04)",
+                  drawBorder: false,
+                  dash: [4, 4]
+                },
+                ticks: { 
+                  color: "#64748b", 
+                  font: { size: 9, family: 'Outfit' },
+                  maxTicksLimit: 6,
+                  padding: 8
+                },
+              },
+            },
+          },
+        });
+      }
+
+      // --- Control Center Functions ---
+      function dismissSplash(ifaces) {
+        const splash = document.getElementById("splash");
+        const main  = document.getElementById("main-content");
+        const count = document.getElementById("splash-iface-count");
+        const n = ifaces.length;
+        count.textContent = `${n} interface${n !== 1 ? "s" : ""} detected — launching dashboard…`;
+        count.style.color = "#10b981";
+        setTimeout(() => {
+          splash.classList.add("hidden-splash");
+          main.style.display = "";
+          setTimeout(() => {
+            initCharts();
+            connectWebSocket();
+            checkStatus();
+            startPolling();
+            intensityIntervalTimer = setInterval(updateIntensity, 2000);
+            // Refresh interface list every 5 s so new adapters appear without reload
+            setInterval(loadInterfaces, 5000);
+            splash.remove();
+          }, 100);
+        }, 900);
+      }
+
+      let splashDismissed = false;
+
+      async function loadInterfaces() {
+        try {
+          const res = await fetch("/api/interfaces");
+          const data = await res.json();
+          const select = document.getElementById("iface-select");
+          const ifaces = data.interfaces || [];
+
+          // Update splash text only while splash is still showing
+          if (!splashDismissed) {
+            const count = document.getElementById("splash-iface-count");
+            if (count) count.textContent = `Found ${ifaces.length} adapter${ifaces.length !== 1 ? "s" : ""}…`;
+          }
+
+          // Remember what the user already chose
+          const previousValue = select.value;
+
+          // Rebuild options
+          select.innerHTML = "";
+          const autoOpt = document.createElement("option");
+          autoOpt.value = "auto";
+          autoOpt.textContent = "Auto (Default)";
+          select.appendChild(autoOpt);
+
+          ifaces.forEach(iface => {
+            const opt = document.createElement("option");
+            opt.value = iface;
+            opt.textContent = iface;
+            select.appendChild(opt);
+          });
+
+          // Restore prior selection if valid; otherwise use server default (first load only)
+          if (previousValue && [...select.options].some(o => o.value === previousValue)) {
+            select.value = previousValue;
+          } else if (!splashDismissed && data.active && ifaces.includes(data.active)) {
+            select.value = data.active;
+          } else if (!splashDismissed && ifaces.length > 0) {
+            select.value = ifaces[0];
+          }
+
+          // Dismiss splash exactly once
+          if (!splashDismissed) {
+            splashDismissed = true;
+            dismissSplash(ifaces);
+          }
+        } catch (e) {
+          console.warn("Could not load interfaces:", e);
+          // Only reset the dropdown if it hasn't been set up yet
+          if (!splashDismissed) {
+            const select = document.getElementById("iface-select");
+            select.innerHTML = '<option value="auto">Auto (Default)</option>';
+            splashDismissed = true;
+            dismissSplash([]);
+          }
+        }
+      }
+
+      async function startSniffer() {
+        const iface = document.getElementById("iface-select").value;
+        const res = await fetch("/api/control/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ interface: iface === "auto" ? null : iface })
+        });
+        const data = await res.json();
+        if (data.status === "ok") {
+          updateStatusUI(true);
+        } else {
+          alert(data.message);
+        }
+      }
+
+      async function stopSniffer() {
+        const res = await fetch("/api/control/stop", { method: "POST" });
+        const data = await res.json();
+        if (data.status === "ok") {
+          updateStatusUI(false);
+        }
+      }
+
+      async function checkStatus() {
+        const res = await fetch("/api/status");
+        const data = await res.json();
+        updateStatusUI(data.running);
+        if (data.demo_mode) document.getElementById("demo-badge").classList.remove("hidden");
+      }
+
+      function updateStatusUI(running) {
+        const dot = document.getElementById("status-dot");
+        const text = document.getElementById("status-text");
+        const btnStart = document.getElementById("btn-start");
+        const btnStop = document.getElementById("btn-stop");
+        if (running) {
+          dot.className = "w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]";
+          text.innerText = "ACTIVE";
+          text.className = "text-xs font-bold text-emerald-500";
+          // Disable START, enable STOP
+          btnStart.disabled = true;
+          btnStart.className = "py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-600 text-xs font-bold cursor-not-allowed transition-all";
+          btnStop.disabled = false;
+          btnStop.className = "py-2 rounded-lg bg-red-500/10 border border-red-500/50 text-red-500 text-xs font-bold hover:bg-red-500/20 active:scale-95 transition-all";
+        } else {
+          dot.className = "w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_#ef4444]";
+          text.innerText = "STOPPED";
+          text.className = "text-xs font-bold text-red-500";
+          // Enable START, disable STOP
+          btnStart.disabled = false;
+          btnStart.className = "py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/50 text-emerald-500 text-xs font-bold hover:bg-emerald-500/20 active:scale-95 transition-all";
+          btnStop.disabled = true;
+          btnStop.className = "py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-600 text-xs font-bold cursor-not-allowed transition-all";
+        }
+      }
+
+      // --- WebSocket & Real-Time ---
+      let socket;
+      let uniqueIps = new Set();
+      let totalPackets = 0;
+      const serviceDistribution = {};
+
+      function connectWebSocket() {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        socket = new WebSocket(wsUrl);
+        socket.onmessage = (event) => {
+          handleRealTimeUpdate(JSON.parse(event.data));
+        };
+        socket.onclose = () => setTimeout(connectWebSocket, 5000);
+      }
+
+      function handleRealTimeUpdate(pkt) {
+        if (!pkt) return;
+        
+        // Stats updates
+        if (pkt.is_ai) {
+          totalPackets++;
+          uniqueIps.add(pkt.source.split(":")[0]);
+          const service = pkt.ai_tool;
+          serviceDistribution[service] = (serviceDistribution[service] || 0) + 1;
+
+          document.getElementById("total-packets").innerText = totalPackets.toLocaleString();
+          document.getElementById("ai-hits").innerText = Object.values(serviceDistribution).reduce((a, b) => a + b, 0).toLocaleString();
+          document.getElementById("unique-sources").innerText = uniqueIps.size;
+
+          donutChart.data.labels = Object.keys(serviceDistribution);
+          donutChart.data.datasets[0].data = Object.values(serviceDistribution);
+          donutChart.update("none");
+        }
+
+        window._wsHits = (window._wsHits || 0) + 1;
+
+        // ── Filter check ─────────────────────────────────────────
+        if (!isPacketAllowed(pkt.ai_tool)) return;
+        if (inSearchMode) return; 
+
+        const tbody = document.getElementById("log-body");
+        const flowId = pkt.flow_id;
+        let row = document.getElementById(`flow-${flowId}`);
+        
+        const isAi = pkt.is_ai;
+        const deviceName = pkt.device || "This Machine";
+        const agentStyle = isAi
+          ? "p-3 font-bold text-slate-200"
+          : "p-3 text-slate-500 text-[10px] italic";
+          
+        const rowHtml = `
+            <td class="p-3 font-mono text-slate-500">${pkt.timestamp}</td>
+            <td class="p-3 text-slate-300">${deviceName}</td>
+            <td class="${agentStyle}">${pkt.ai_tool}${isAi ? '' : '?'}</td>
+            <td class="p-3 font-bold ${pkt.direction === "OUTBOUND" ? "text-sky-400" : "text-amber-400"} uppercase text-[8px]">OUT → IN</td>
+            <td class="p-3 font-mono text-slate-400 uppercase">${pkt.source} <span class="text-slate-600">→</span> ${pkt.destination}</td>
+            <td class="p-3 text-slate-500 uppercase">${pkt.protocol || "—"}</td>
+            <td class="p-3 font-mono text-slate-300">
+               <span class="text-sky-400/80">↑${pkt.size_up}</span> 
+               <span class="text-amber-400/80 ml-2">↓${pkt.size_down}</span>
+            </td>
+            <td class="p-3 font-mono text-slate-400">
+               <span class="text-sky-400/60">${pkt.pkts_up}↑</span>
+               <span class="text-amber-400/60 ml-1">${pkt.pkts_down}↓</span>
+            </td>
+            <td class="p-3 font-mono text-slate-500">~${pkt.duration}</td>
+            <td class="p-3 text-right text-slate-400 italic">${pkt.status_note}</td>
+        `;
+
+        if (row) {
+          row.innerHTML = rowHtml;
+          // Flash effect
+          row.classList.add("bg-sky-500/5");
+          setTimeout(() => row.classList.remove("bg-sky-500/5"), 300);
+        } else {
+          row = document.createElement("tr");
+          row.id = `flow-${flowId}`;
+          row.className = `hover:bg-slate-800/30 group border-b border-slate-800/50 transition-all${isAi ? "" : " opacity-60"}`;
+          row.innerHTML = rowHtml;
+          tbody.insertBefore(row, tbody.firstChild);
+        }
+
+        while (tbody.children.length > logLimit) {
+          tbody.removeChild(tbody.lastChild);
+        }
+        
+        // Rate Bar Update
+        const rate = Math.min(window._wsHits * 5, 100);
+        document.getElementById("rate-fill").style.width = rate + "%";
+      }
+
+      // ── Feed Filter Helpers ──────────────────────────────────
+      function getActiveFilters() {
+        const checked = new Set();
+        document.querySelectorAll(".filter-cb:checked").forEach(cb => checked.add(cb.value));
+        return checked;
+      }
+
+      function isPacketAllowed(label) {
+        // If the filter panel doesn't exist yet, allow everything
+        const panel = document.getElementById("filter-body");
+        if (!panel) return true;
+        const active = getActiveFilters();
+        // Try exact match first, then prefix match for AI labels like "OpenAI"
+        if (active.has(label)) return true;
+        // Partial match: e.g. checkbox "OpenAI" matches label "OpenAI"
+        return [...active].some(f => label && label.startsWith(f));
+      }
+
+      function toggleFilterGroup(group, state) {
+        const cls = group === 'ai' ? '.ai-cb' : '.net-cb';
+        document.querySelectorAll(cls).forEach(cb => cb.checked = state);
+      }
+
+      // ── Search History ─────────────────────────────────────────────────
+      let inSearchMode = false;
+
+      function toggleSearchPanel() {
+        const panel = document.getElementById("search-panel");
+        panel.classList.toggle("hidden");
+        if (!panel.classList.contains("hidden")) {
+          document.getElementById("srch-q").focus();
+        }
+      }
+
+      async function runSearch() {
+        const q        = document.getElementById("srch-q").value.trim();
+        const fromRaw  = document.getElementById("srch-from").value;
+        const toRaw    = document.getElementById("srch-to").value;
+        const proto    = document.getElementById("srch-proto").value;
+        const dir      = document.getElementById("srch-dir").value;
+        const countEl  = document.getElementById("srch-count");
+
+        // Convert datetime-local value (YYYY-MM-DDTHH:mm) to ISO string
+        const dateFrom = fromRaw ? fromRaw.replace("T", " ") + ":00" : "";
+        const dateTo   = toRaw   ? toRaw.replace("T", " ")   + ":59" : "";
+
+        const params = new URLSearchParams();
+        if (q)        params.set("q", q);
+        if (dateFrom) params.set("date_from", dateFrom);
+        if (dateTo)   params.set("date_to",   dateTo);
+        if (proto)    params.set("protocol",  proto);
+        if (dir)      params.set("direction", dir);
+        params.set("limit", "500");
+
+        countEl.textContent = "Searching…";
+        try {
+          const res  = await fetch("/api/search?" + params.toString());
+          const data = await res.json();
+          const rows = data.results || [];
+
+          // Switch feed to search mode
+          inSearchMode = true;
+          const badge = document.getElementById("feed-mode-badge");
+          badge.className = "px-2 py-0.5 bg-sky-500/15 text-sky-400 text-[9px] font-bold rounded uppercase";
+          badge.textContent = `🔍 ${rows.length} result${rows.length !== 1 ? "s" : ""}`;
+
+          const tbody = document.getElementById("log-body");
+          tbody.innerHTML = "";
+
+          if (rows.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-slate-500 text-xs">No records found</td></tr>`;
+            countEl.textContent = "No results";
+            return;
+          }
+
+          rows.forEach(r => {
+            const tr = document.createElement("tr");
+            tr.className = "hover:bg-slate-800/30 group border-b border-slate-800/60";
+            const ts = r.ts ? r.ts.substring(0, 19).replace("T", " ") : "—";
+            const dir_label = (r.direction || "").toUpperCase() === "OUTBOUND"
+              ? '<span class="text-sky-400">▲ OUT</span>'
+              : '<span class="text-amber-400">▼ IN</span>';
+            tr.innerHTML = `
+              <td class="p-3 font-mono text-slate-500">${ts}</td>
+              <td class="p-3 text-slate-400">—</td>
+              <td class="p-3 font-bold text-slate-200">${r.domain || "—"}</td>
+              <td class="p-3 font-bold text-[8px]">${dir_label}</td>
+              <td class="p-3 font-mono text-slate-400">${r.src_ip}:${r.src_port} <span class="text-slate-600">→</span> ${r.dst_ip}:${r.dst_port}</td>
+              <td class="p-3 font-mono text-slate-500">${r.ja4_fingerprint ? r.ja4_fingerprint.substring(0, 15) + '…' : '—'}</td>
+              <td class="p-3 text-slate-500 uppercase">${r.protocol || "—"}</td>
+              <td class="p-3 font-mono text-slate-500">${fmt_bytes(r.payload_len || 0)}</td>
+            `;
+            tbody.appendChild(tr);
+          });
+
+          countEl.textContent = `${rows.length} record${rows.length !== 1 ? "s" : ""} found`;
+        } catch (e) {
+          countEl.textContent = "Search failed";
+          console.error("Search error:", e);
+        }
+      }
+
+      function clearSearch() {
+        inSearchMode = false;
+        document.getElementById("srch-q").value     = "";
+        document.getElementById("srch-from").value  = "";
+        document.getElementById("srch-to").value    = "";
+        document.getElementById("srch-proto").value = "";
+        document.getElementById("srch-dir").value   = "";
+        document.getElementById("srch-count").textContent = "";
+        document.getElementById("log-body").innerHTML = "";
+        const badge = document.getElementById("feed-mode-badge");
+        badge.className = "px-2 py-0.5 bg-emerald-500/15 text-emerald-400 text-[9px] font-bold rounded uppercase";
+        badge.textContent = "● Live";
+        // Close search panel
+        document.getElementById("search-panel").classList.add("hidden");
+      }
+
+      function startPolling() {
+        if (refreshIntervalTimer) clearInterval(refreshIntervalTimer);
+        const interval = document.getElementById("refresh-interval").value * 1000;
+        syncState();
+        refreshIntervalTimer = setInterval(syncState, interval);
+      }
+
+      async function syncState() {
+        try {
+          const res = await fetch("/api/stats");
+          const data = await res.json();
+          // Only update packet counter and uptime — do NOT load historical chart data
+          if (totalPackets < data.total_packets) {
+            totalPackets = data.total_packets;
+            document.getElementById("total-packets").innerText = totalPackets.toLocaleString();
+          }
+          document.getElementById("uptime").innerText = data.uptime;
+        } catch (err) {}
+      }
+
+      function updateIntensity() {
+        const hits = window._wsHits || 0;
+        window._wsHits = 0;
+        trafficHistory.push(hits);
+        trafficHistory.shift();
+        timeLabels.push(new Date().toLocaleTimeString());
+        timeLabels.shift();
+        lineChart.update("none");
+      }
+
+      // --- Event Listeners for Settings ---
+      document.getElementById("refresh-interval").addEventListener("change", (e) => {
+        const val = e.target.value;
+        document.getElementById("interval-val").innerText = val + "s";
+        startPolling();
+        clearInterval(intensityIntervalTimer);
+        intensityIntervalTimer = setInterval(updateIntensity, val * 1000);
+      });
+
+      document.getElementById("refresh-interval").addEventListener("input", (e) => {
+        document.getElementById("interval-val").innerText = e.target.value + "s";
+      });
+
+      document.getElementById("log-limit").addEventListener("input", (e) => {
+        logLimit = parseInt(e.target.value);
+        document.getElementById("log-limit-val").innerText = logLimit;
+        
+        // Immediate Pruning
+        const tbody = document.getElementById("log-body");
+        while (tbody.children.length > logLimit) {
+          tbody.removeChild(tbody.lastChild);
+        }
+      });
+
+      window.addEventListener("load", () => {
+        // loadInterfaces() runs first — it drives the splash → dashboard transition.
+        // initCharts() and the rest fire inside dismissSplash() AFTER content is visible,
+        // so Chart.js gets real canvas dimensions (not zero from display:none).
+        loadAgents().then(() => {
+          loadInterfaces();
+        });
+      });
+    </script>
+    </div> <!-- end #main-content -->
+
+</body>
+</html>

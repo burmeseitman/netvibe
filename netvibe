@@ -1,0 +1,14 @@
+#!/bin/bash
+# NetVibe Launcher - Delegates to virtual environment
+# Usage: sudo ./netvibe
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_NETVIBE="$SCRIPT_DIR/env/bin/netvibe"
+
+if [ -f "$VENV_NETVIBE" ]; then
+    exec "$VENV_NETVIBE" "$@"
+else
+    echo "Error: NetVibe is not installed in the virtual environment."
+    echo "Please run ./setup.sh first."
+    exit 1
+fi

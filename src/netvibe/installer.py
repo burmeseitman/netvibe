@@ -61,11 +61,13 @@ def is_npcap_installed() -> bool:
 
 def download_npcap(url: str = "https://nmap.org/npcap/dist/npcap-1.79.exe") -> str:
     """Download Npcap installer to a temporary file."""
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("URL must start with http:// or https://")
     temp_dir = tempfile.gettempdir()
     dest = os.path.join(temp_dir, "npcap_installer.exe")
     
     logger.info("Downloading Npcap from %s...", url)
-    urllib.request.urlretrieve(url, dest)
+    urllib.request.urlretrieve(url, dest)  # nosec B310
     logger.info("Download complete: %s", dest)
     return dest
 

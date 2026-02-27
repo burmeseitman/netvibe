@@ -7,13 +7,18 @@ for storing captured packets and alert events.
 
 import sqlite3
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
-# Store database in user's home directory for proper package installation
-DB_DIR = Path.home() / ".netvibe"
-DB_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = DB_DIR / "netvibe.db"
+# Store database in the user's home directory by default
+DEFAULT_BASE_DIR = Path("/Users/minhtet/.netvibe")
+DEFAULT_DB_PATH = DEFAULT_BASE_DIR / "netvibe.db"
+
+# Allow override via environment variable
+DB_PATH = Path(os.getenv("NETVIBE_DB_PATH", str(DEFAULT_DB_PATH)))
+if not DB_PATH.parent.exists():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +54,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     direction   TEXT    NOT NULL CHECK(direction IN ('outbound', 'inbound', 'unknown')),
     severity    TEXT    NOT NULL DEFAULT 'info'
                         CHECK(severity IN ('info', 'warning', 'critical')),
+    ja4_fingerprint TEXT,                  -- TLS fingerprint
     note        TEXT                        -- optional human note
 );
 
@@ -62,6 +68,26 @@ CREATE TABLE IF NOT EXISTS sessions (
     interface   TEXT,
     total_pkts  INTEGER DEFAULT 0,
     total_alerts INTEGER DEFAULT 0
+);
+
+-- -------------------------------------------------------
+-- ai_agents: dynamically monitored agents
+-- -------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ai_agents (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL,
+    domain_keyword TEXT NOT NULL UNIQUE
+);
+
+-- -------------------------------------------------------
+-- devices: persistent mapping for device identification
+-- -------------------------------------------------------
+CREATE TABLE IF NOT EXISTS devices (
+    mac_address    TEXT PRIMARY KEY,
+    hostname       TEXT,                -- e.g. MacBook-Pro.local (from MDNS)
+    manufacturer   TEXT,                -- e.g. Apple, Samsung (from OUI)
+    label          TEXT,                -- user-customizable label
+    last_seen      TEXT NOT NULL
 );
 
 -- -------------------------------------------------------
@@ -96,6 +122,48 @@ def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
     logger.info("Initialising database at %s", db_path)
     conn = get_connection(db_path)
     conn.executescript(SCHEMA_SQL)
+    
+    # Self-healing migration for missing columns
+    try:
+        cur = conn.execute("PRAGMA table_info(alerts)")
+        columns = [row[1] for row in cur.fetchall()]
+        if "ja4_fingerprint" not in columns:
+            logger.info("Migrating 'alerts' table: adding 'ja4_fingerprint' column.")
+            conn.execute("ALTER TABLE alerts ADD COLUMN ja4_fingerprint TEXT")
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Migration error: {e}")
+
+    # Pre-populate / Update default AI agents
+    defaults = [
+        ("OpenAI", "openai.com"),
+        ("OpenAI", "chatgpt.com"),
+        ("OpenAI", "api.openai.com"),
+        ("Claude", "anthropic.com"),
+        ("Claude", "claude.ai"),
+        ("Claude", "api.anthropic.com"),
+        ("Gemini", "gemini.google.com"),
+        ("Gemini", "gemini"),
+        ("Copilot", "github.com"),
+        ("Copilot", "copilot"),
+        ("Grok", "grok.com"),
+        ("Grok", "x.ai"),
+        ("Grok", "api.x.ai"),
+        ("Grok", "social-ai.com"),
+        ("Perplexity", "perplexity"),
+        ("DeepSeek", "deepseek"),
+        ("Mistral", "mistral"),
+        ("Codeium", "codeium"),
+        ("Cursor", "cursor.sh"),
+        ("Cursor", "cursor.com")
+    ]
+    
+    for name, kw in defaults:
+        cur = conn.execute("SELECT id FROM ai_agents WHERE domain_keyword = ?", (kw,))
+        if not cur.fetchone():
+            logger.info(f"Adding missing AI agent keyword: {kw} ({name})")
+            conn.execute("INSERT INTO ai_agents (name, domain_keyword) VALUES (?, ?)", (name, kw))
+
     conn.commit()
     logger.info("Database ready.")
     return conn
@@ -104,6 +172,36 @@ def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 # CRUD helpers
 # ---------------------------------------------------------------------------
+
+def get_all_agents(conn: sqlite3.Connection) -> list[dict]:
+    """Return all configured AI agents."""
+    rows = conn.execute("SELECT id, name, domain_keyword FROM ai_agents ORDER BY name").fetchall()
+    return [dict(r) for r in rows]
+
+def insert_agent(conn: sqlite3.Connection, name: str, domain_keyword: str) -> int:
+    """Insert a new AI agent to monitor."""
+    cur = conn.execute(
+        "INSERT INTO ai_agents (name, domain_keyword) VALUES (?, ?)",
+        (name.strip(), domain_keyword.strip().lower())
+    )
+    conn.commit()
+    return cur.lastrowid
+
+def delete_agent(conn: sqlite3.Connection, agent_id: int) -> bool:
+    """Delete an AI agent by ID."""
+    cur = conn.execute("DELETE FROM ai_agents WHERE id = ?", (agent_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+def update_agent(conn: sqlite3.Connection, agent_id: int, name: str, domain_keyword: str) -> bool:
+    """Update an existing AI agent."""
+    cur = conn.execute(
+        "UPDATE ai_agents SET name = ?, domain_keyword = ? WHERE id = ?",
+        (name.strip(), domain_keyword.strip().lower(), agent_id)
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
 
 def insert_packet(
     conn: sqlite3.Connection,
@@ -118,7 +216,7 @@ def insert_packet(
     timestamp: str | None = None,
 ) -> int:
     """Insert a captured packet row and return its row-id."""
-    ts = timestamp or datetime.utcnow().isoformat(timespec="microseconds")
+    ts = timestamp or datetime.now().isoformat(timespec="microseconds")
     cur = conn.execute(
         """
         INSERT INTO packets
@@ -134,32 +232,29 @@ def insert_packet(
 
 def insert_alert(
     conn: sqlite3.Connection,
-    *,
     packet_id: int,
     domain: str,
-    direction: str = "unknown",
+    direction: str = "outbound",
     severity: str = "info",
-    note: str = "",
-    timestamp: str | None = None,
+    ja4: str | None = None,
+    note: str | None = None,
 ) -> int:
-    """Insert an alert row tied to a packet and return its row-id."""
-    ts = timestamp or datetime.utcnow().isoformat(timespec="microseconds")
-    cur = conn.execute(
+    """Create an alert linked to a captured packet."""
+    ts = datetime.now().isoformat(timespec="microseconds")
+    cursor = conn.execute(
         """
-        INSERT INTO alerts
-            (packet_id, timestamp, domain, direction, severity, note)
-        VALUES
-            (?, ?, ?, ?, ?, ?)
+        INSERT INTO alerts (packet_id, timestamp, domain, direction, severity, ja4_fingerprint, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (packet_id, ts, domain, direction, severity, note),
+        (packet_id, ts, domain, direction, severity, ja4, note),
     )
     conn.commit()
-    return cur.lastrowid
+    return cursor.lastrowid
 
 
 def start_session(conn: sqlite3.Connection, interface: str = "") -> int:
     """Record the start of a monitoring session and return its row-id."""
-    ts = datetime.utcnow().isoformat(timespec="microseconds")
+    ts = datetime.now().isoformat(timespec="microseconds")
     cur = conn.execute(
         "INSERT INTO sessions (started_at, interface) VALUES (?, ?)",
         (ts, interface),
@@ -175,7 +270,7 @@ def end_session(
     total_alerts: int,
 ) -> None:
     """Mark a monitoring session as finished."""
-    ts = datetime.utcnow().isoformat(timespec="microseconds")
+    ts = datetime.now().isoformat(timespec="microseconds")
     conn.execute(
         """
         UPDATE sessions
@@ -185,6 +280,46 @@ def end_session(
         (ts, total_pkts, total_alerts, session_id),
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Device Tracking Helpers
+# ---------------------------------------------------------------------------
+
+def upsert_device(
+    conn: sqlite3.Connection,
+    mac: str,
+    hostname: str | None = None,
+    manufacturer: str | None = None,
+    label: str | None = None
+) -> None:
+    """Insert or update a device record based on MAC address."""
+    ts = datetime.now().isoformat(timespec="microseconds")
+    
+    # We use COALESCE to avoid overwriting existing data with NULLs
+    conn.execute(
+        """
+        INSERT INTO devices (mac_address, hostname, manufacturer, label, last_seen)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(mac_address) DO UPDATE SET
+            hostname = COALESCE(?, devices.hostname),
+            manufacturer = COALESCE(?, devices.manufacturer),
+            label = COALESCE(?, devices.label),
+            last_seen = excluded.last_seen
+        """,
+        (mac, hostname, manufacturer, label, ts, hostname, manufacturer, label)
+    )
+    conn.commit()
+
+def get_device_by_mac(conn: sqlite3.Connection, mac: str) -> dict | None:
+    """Return device info by MAC address."""
+    row = conn.execute("SELECT * FROM devices WHERE mac_address = ?", (mac,)).fetchone()
+    return dict(row) if row else None
+
+def get_all_devices(conn: sqlite3.Connection) -> list[dict]:
+    """Return all known devices."""
+    rows = conn.execute("SELECT * FROM devices ORDER BY last_seen DESC").fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +336,7 @@ def fetch_recent_alerts(conn: sqlite3.Connection, limit: int = 50) -> list[sqlit
             a.domain,
             a.direction,
             a.severity,
+            a.ja4_fingerprint,
             a.note,
             p.src_ip,
             p.dst_ip,
@@ -279,3 +415,70 @@ def fetch_live_logs(conn: sqlite3.Connection, limit: int = 100) -> list[sqlite3.
         """,
         (limit,),
     ).fetchall()
+
+
+def search_packets(
+    conn: sqlite3.Connection,
+    *,
+    query: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    protocol: str = "",
+    direction: str = "",
+    limit: int = 500,
+) -> list[dict]:
+    """
+    Full-history search across packets + alerts.
+    Supports optional filters:
+      query      – matches src_ip, dst_ip, or domain (LIKE)
+      date_from  – ISO datetime string, inclusive lower bound
+      date_to    – ISO datetime string, inclusive upper bound
+      protocol   – TCP / UDP / Other
+      direction  – outbound / inbound
+    Returns a list of plain dicts (JSON-serialisable).
+    """
+    conditions = []
+    params: list = []
+
+    if query:
+        like = f"%{query}%"
+        conditions.append("(p.src_ip LIKE ? OR p.dst_ip LIKE ? OR a.domain LIKE ?)")
+        params += [like, like, like]
+    if date_from:
+        conditions.append("a.timestamp >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append("a.timestamp <= ?")
+        params.append(date_to)
+    if protocol:
+        conditions.append("p.protocol = ?")
+        params.append(protocol)
+    if direction:
+        conditions.append("a.direction = ?")
+        params.append(direction)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    query = f"""
+        SELECT
+            a.timestamp   AS ts,
+            p.src_ip,
+            p.src_port,
+            p.dst_ip,
+            p.dst_port,
+            p.protocol,
+            a.domain,
+            a.direction,
+            a.severity,
+            a.ja4_fingerprint,
+            p.payload_len
+        FROM alerts a
+        JOIN packets p ON p.id = a.packet_id
+        {where}
+        ORDER BY a.timestamp DESC
+        LIMIT ?
+        """  # nosec B608
+
+    rows = conn.execute(query, (*params, limit)).fetchall()
+
+    return [dict(r) for r in rows]
