@@ -50,45 +50,64 @@ NetVibe uses deep packet inspection and MDNS to classify every device on your ne
 
 ---
 
-## 🚀 Installation Guide
+## 🚀 One-Command Installation
 
-### 1. Prerequisites (Platform Drivers)
-NetVibe requires packet capture drivers to perform live monitoring.
+NetVibe features a **fully automated setup wizard** that handles environment creation, dependency installation, and driver detection with a single command.
 
-| Platform | Recommended Driver | Installation Command |
-| :--- | :--- | :--- |
-| **macOS** | `libpcap` | `brew install libpcap` |
-| **Windows** | `Npcap` | [Download Npcap](https://npcap.com/#download) (Installer included) |
-| **Ubuntu / Debian** | `libpcap-dev` | `sudo apt update && sudo apt install libpcap-dev` |
-| **Fedora / RHEL** | `libpcap-devel` | `sudo dnf install libpcap-devel` |
-| **Arch Linux** | `libpcap` | `sudo pacman -S libpcap` |
-| **Raspberry Pi OS** | `libpcap-dev` | `sudo apt install libpcap-dev` |
-
-### 2. Quick Setup
-Run the automated setup wizard to create a virtual environment and install dependencies:
+### ⚡ Quick Start
+Open your terminal/command prompt in the `netvibe` directory and run:
 
 **macOS / Linux:**
 ```bash
 ./setup.sh
 ```
 
-**Windows:**
+**Windows (Admin):**
 ```bat
 setup.bat
 ```
 
-### 3. Launching
-After setup, run with elevated privileges for live capture:
+> [!TIP]
+> **Zero Configuration**: The setup will automatically detect your OS, install all Python requirements, and prompt you to install `netvibe` globally. You only need to choose **Yes/No** when prompted.
+
+---
+
+## 🛠️ Installation Details
+
+### 1. Automated Setup Process
+When you run the setup command, NetVibe performs the following:
+- **Environment Isolation**: Creates a dedicated Python virtual environment (`env/`).
+- **Core Dependencies**: Installs the high-performance traffic monitoring suite.
+- **Driver Detection**: 
+  - **Windows**: Automatically detects if `Npcap` is missing, downloads the installer, and launches it for you.
+  - **macOS/Linux**: Verifies `libpcap` compatibility.
+- **Global Path Integration**: Optionally adds `netvibe` to your system path (User input: **Yes/No**).
+
+### 2. Manual Prerequisite Check
+If the automated driver setup fails, ensure you have the following packet capture drivers:
+
+| Platform | Recommended Driver | Installation Command |
+| :--- | :--- | :--- |
+| **macOS** | `libpcap` | `brew install libpcap` |
+| **Windows** | `Npcap` | [Download Npcap](https://npcap.com/#download) |
+| **Ubuntu / Debian** | `libpcap-dev` | `sudo apt update && sudo apt install libpcap-dev` |
+| **Fedora / RHEL** | `libpcap-devel` | `sudo dnf install libpcap-devel` |
+
+---
+
+## 🚦 Launching NetVibe
+
+After setup, you can launch the Intelligence Dashboard from any directory (if you opted for global installation):
 
 ```bash
-# macOS / Linux
+# Start Live Monitoring (Requires Elevation)
 sudo netvibe
 
-# Windows (Admin Command Prompt)
-netvibe
+# Start in Demo Mode (No Root Required)
+netvibe --demo
 ```
 
-> **Note**: For testing without root, use `netvibe --demo`.
+> **Note for Windows**: Always run your Command Prompt or PowerShell as **Administrator** for live packet capture.
 
 ---
 
