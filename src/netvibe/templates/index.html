@@ -241,7 +241,7 @@
           <p
             class="text-xs font-semibold tracking-widest text-slate-500 uppercase animate-pulse-slow"
           >
-            Real-Time Neural Network Telemetry
+            AI Traffic Intelligence Dashboard
           </p>
         </div>
         <a href="https://github.com/burmeseitman/netvibe" target="_blank" rel="noopener noreferrer" class="text-slate-500 hover:text-white transition-colors" title="View Source on GitHub">
@@ -832,23 +832,23 @@
       }
 
       // --- Control Center Functions ---
-      function dismissSplash(ifaces) {
+      async function dismissSplash(ifaces) {
         const splash = document.getElementById("splash");
         const main  = document.getElementById("main-content");
         const count = document.getElementById("splash-iface-count");
         const n = ifaces.length;
         count.textContent = `${n} interface${n !== 1 ? "s" : ""} detected — launching dashboard…`;
         count.style.color = "#10b981";
-        setTimeout(() => {
+        setTimeout(async () => {
           splash.classList.add("hidden-splash");
           main.style.display = "";
-          setTimeout(() => {
+          setTimeout(async () => {
             initCharts();
+            await loadHistoricalData(); // Load DB records first
             connectWebSocket();
             checkStatus();
             startPolling();
             intensityIntervalTimer = setInterval(updateIntensity, 2000);
-            // Refresh interface list every 5 s so new adapters appear without reload
             setInterval(loadInterfaces, 5000);
             splash.remove();
           }, 100);
@@ -969,11 +969,43 @@
         }
       }
 
-      // --- WebSocket & Real-Time ---
       let socket;
       let uniqueIps = new Set();
       let totalPackets = 0;
-      const serviceDistribution = {};
+      let serviceDistribution = {};
+
+      async function loadHistoricalData() {
+        try {
+          // 1. Load Logs
+          const logRes = await fetch(`/api/logs?limit=${logLimit}`);
+          const logs = await logRes.json();
+          const tbody = document.getElementById("log-body");
+          tbody.innerHTML = "";
+          logs.forEach(pkt => {
+             // Adapt keys to match WebSocket format if needed
+             renderTableRow(pkt, true);
+          });
+
+          // 2. Load Stats
+          const statRes = await fetch("/api/stats");
+          const stats = await statRes.json();
+          
+          totalPackets = stats.total_packets;
+          const ai_hits = stats.ai_hits;
+          serviceDistribution = stats.service_distribution || {};
+          
+          document.getElementById("total-packets").innerText = totalPackets.toLocaleString();
+          document.getElementById("ai-hits").innerText = ai_hits.toLocaleString();
+          
+          if (Object.keys(serviceDistribution).length > 0) {
+            donutChart.data.labels = Object.keys(serviceDistribution);
+            donutChart.data.datasets[0].data = Object.values(serviceDistribution);
+            donutChart.update();
+          }
+        } catch (e) {
+          console.error("Historical data load failed", e);
+        }
+      }
 
       function connectWebSocket() {
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -1010,12 +1042,20 @@
         if (!isPacketAllowed(pkt.ai_tool)) return;
         if (inSearchMode) return; 
 
+        renderTableRow(pkt, false);
+
+        // Rate Bar Update
+        const rate = Math.min(window._wsHits * 5, 100);
+        document.getElementById("rate-fill").style.width = rate + "%";
+      }
+
+      function renderTableRow(pkt, isHistorical = false) {
         const tbody = document.getElementById("log-body");
-        const flowId = pkt.flow_id;
+        const flowId = pkt.flow_id || Math.random(); // Fallback for historical
         let row = document.getElementById(`flow-${flowId}`);
         
-        const isAi = pkt.is_ai;
-        const deviceName = pkt.device || "This Machine";
+        const isAi = pkt.is_ai !== false; // Mock data is always AI
+        const deviceName = pkt.device || "Simulated Node";
         const agentStyle = isAi
           ? "p-3 font-bold text-slate-200"
           : "p-3 text-slate-500 text-[10px] italic";
@@ -1024,41 +1064,38 @@
             <td class="p-3 font-mono text-slate-500">${pkt.timestamp}</td>
             <td class="p-3 text-slate-300">${deviceName}</td>
             <td class="${agentStyle}">${pkt.ai_tool}${isAi ? '' : '?'}</td>
-            <td class="p-3 font-bold ${pkt.direction === "OUTBOUND" ? "text-sky-400" : "text-amber-400"} uppercase text-[8px]">OUT → IN</td>
+            <td class="p-3 font-bold ${pkt.direction === "OUTBOUND" ? "text-sky-400" : "text-amber-400"} uppercase text-[8px]">${pkt.direction}</td>
             <td class="p-3 font-mono text-slate-400 uppercase">${pkt.source} <span class="text-slate-600">→</span> ${pkt.destination}</td>
             <td class="p-3 text-slate-500 uppercase">${pkt.protocol || "—"}</td>
             <td class="p-3 font-mono text-slate-300">
-               <span class="text-sky-400/80">↑${pkt.size_up}</span> 
-               <span class="text-amber-400/80 ml-2">↓${pkt.size_down}</span>
+               <span class="${isHistorical ? 'text-slate-400' : 'text-sky-400/80'}">${pkt.size || pkt.size_up || 0}</span> 
             </td>
             <td class="p-3 font-mono text-slate-400">
-               <span class="text-sky-400/60">${pkt.pkts_up}↑</span>
-               <span class="text-amber-400/60 ml-1">${pkt.pkts_down}↓</span>
+               <span class="text-slate-500">${isHistorical ? 'Historical' : 'Live'}</span>
             </td>
-            <td class="p-3 font-mono text-slate-500">~${pkt.duration}</td>
-            <td class="p-3 text-right text-slate-400 italic">${pkt.status_note}</td>
+            <td class="p-3 font-mono text-slate-500">${isHistorical ? '-' : '~' + pkt.duration}</td>
+            <td class="p-3 text-right text-slate-400 italic">${pkt.status_note || (isHistorical ? 'Archived' : 'Active')}</td>
         `;
 
-        if (row) {
+        if (row && !isHistorical) {
           row.innerHTML = rowHtml;
-          // Flash effect
           row.classList.add("bg-sky-500/5");
           setTimeout(() => row.classList.remove("bg-sky-500/5"), 300);
         } else {
           row = document.createElement("tr");
-          row.id = `flow-${flowId}`;
+          if (!isHistorical) row.id = `flow-${flowId}`;
           row.className = `hover:bg-slate-800/30 group border-b border-slate-800/50 transition-all${isAi ? "" : " opacity-60"}`;
           row.innerHTML = rowHtml;
-          tbody.insertBefore(row, tbody.firstChild);
+          if (isHistorical) {
+            tbody.appendChild(row);
+          } else {
+            tbody.insertBefore(row, tbody.firstChild);
+          }
         }
 
         while (tbody.children.length > logLimit) {
           tbody.removeChild(tbody.lastChild);
         }
-        
-        // Rate Bar Update
-        const rate = Math.min(window._wsHits * 5, 100);
-        document.getElementById("rate-fill").style.width = rate + "%";
       }
 
       // ── Feed Filter Helpers ──────────────────────────────────

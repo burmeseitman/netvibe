@@ -87,7 +87,7 @@ async def demo_sender():
     """Background task for demo mode packet generation."""
     while True:
         if state.demo_mode and state.running:
-            await asyncio.sleep(random.uniform(2, 5))
+            await asyncio.sleep(random.uniform(0.5, 2.0))
             packet = generate_demo_packet()
             await manager.broadcast(packet)
         else:
@@ -100,15 +100,25 @@ async def lifespan(app: FastAPI):
     state.db_conn = db.init_db()
     loop = asyncio.get_running_loop()
 
-    # Check environment but do NOT auto-start — user clicks START
+    # Check environment or force via env var
+    import os
+    force_demo = os.environ.get("NETVIBE_DEMO") == "1"
+    
     success, msg = NetVibeSniffer.check_environment()
-    if success:
-        logger.info("Environment check passed. Sniffer ready — waiting for user to start.")
-        # Pre-create sniffer object so it's ready to go on first START click
+    if success and not force_demo:
+        logger.info("Environment check passed. Sniffer ready.")
         state.sniffer = NetVibeSniffer(state.db_conn, alert_queue=state.alert_queue, loop=loop)
         state.running = False
+        state.demo_mode = False
     else:
-        logger.warning(f"Environment check failed: {msg}. Demo mode available.")
+        if force_demo:
+            logger.info("Forced demo mode requested.")
+            # Populate with mock data if DB is empty
+            alerts = db.fetch_recent_alerts(state.db_conn, limit=1)
+            if not alerts:
+                db.create_mock_data(state.db_conn, count=50)
+        else:
+            logger.warning(f"Environment check failed: {msg}. Falling back to demo mode.")
         state.demo_mode = True
         state.running = False
 
@@ -294,19 +304,45 @@ def classify_device(src_ip: str, src_mac: str | None = None) -> str:
     return "🌐 Remote"
 
 def generate_demo_packet():
-    ai_tools = ["OpenAI", "Claude", "Gemini", "Copilot", "Perplexity", "DeepSeek", "Grok"]
-    tool = random.choice(ai_tools)
+    """Generate a simulated AI traffic packet and store it in the database."""
+    ai_agents = [
+        ("OpenAI", "openai.com"), ("Claude", "claude.ai"), 
+        ("Gemini", "gemini.google.com"), ("Copilot", "github.com"), 
+        ("Perplexity", "perplexity.ai"), ("DeepSeek", "deepseek.com"),
+        ("Grok", "grok.com")
+    ]
+    name, kw = random.choice(ai_agents)
     src_ip = f"192.168.1.{random.randint(2, 254)}"
+    dst_ip = f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
+    direction = random.choice(["outbound", "inbound"])
+    size = random.randint(100, 50000)
+    sport = random.randint(30000, 65000)
+    
+    # Write to DB if possible
+    if state.db_conn:
+        try:
+            pkt_id = db.insert_packet(
+                state.db_conn,
+                src_ip=src_ip, dst_ip=dst_ip, protocol="TCP",
+                src_port=sport, dst_port=443,
+                payload_len=size, raw_summary=f"[{name}] Simulated Demo Traffic"
+            )
+            db.insert_alert(state.db_conn, packet_id=pkt_id, domain=kw, direction=direction)
+        except Exception as e:
+            logger.error(f"Demo DB insert error: {e}")
+
     return {
         "timestamp": datetime.now().strftime("%H:%M:%S"),
-        "source": f"{src_ip}:{random.randint(30000, 65000)}",
-        "destination": f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}:443",
+        "source": f"{src_ip}:{sport}",
+        "destination": f"{dst_ip}:443",
         "protocol": "TCP",
-        "ai_tool": tool,
-        "direction": random.choice(["OUTBOUND", "INBOUND"]),
-        "size": fmt_bytes(random.randint(100, 50000)),
+        "ai_tool": name,
+        "direction": direction.upper(),
+        "size": fmt_bytes(size),
         "src_ip": src_ip,
         "device": classify_device(src_ip),
+        "is_ai": True,
+        "status_note": "Simulated Activity"
     }
 
 # ── 2. Routes ───────────────────────────────────────────────────────────────
@@ -317,21 +353,21 @@ async def index(request: Request):
 
 @app.get("/api/stats")
 async def get_stats():
-    """Return summary statistics for charts."""
+    """Return summary statistics for charts from the database."""
+    total_packets = state.sniffer.stats.total_packets if state.sniffer else 0
+    ai_hits = state.sniffer.stats.total_alerts if state.sniffer else 0
+    
+    # If in demo mode, we might want to scale or use DB counts directly
     if state.demo_mode:
-        # Simulate traffic stats
-        if len(state.demo_packets) < 5 or random.random() < 0.3:
-            state.demo_packets.append(generate_demo_packet())
-            if len(state.demo_packets) > 500: state.demo_packets = state.demo_packets[-500:]
-            
-        df = pd.DataFrame(state.demo_packets)
-        total_packets = len(state.demo_packets) * 12 # scaled
-        ai_hits = len(df)
-        dist = df['ai_tool'].value_counts().to_dict() if not df.empty else {}
+        # In demo mode, fetch real counts from DB for better responsiveness
+        try:
+            dist = db.fetch_alert_stats(state.db_conn)
+            ai_hits = sum(dist.values())
+            # Artificial scale for packets to look active
+            total_packets = ai_hits * 12 + random.randint(0, 10)
+        except Exception:
+            dist = {}
     else:
-        # Real DB stats
-        total_packets = state.sniffer.stats.total_packets if state.sniffer else 0
-        ai_hits = state.sniffer.stats.total_alerts if state.sniffer else 0
         dist = db.fetch_alert_stats(state.db_conn)
         
     return {
@@ -344,24 +380,22 @@ async def get_stats():
 
 @app.get("/api/logs")
 async def get_logs(limit: int = 50):
-    """Return recent packet logs."""
-    if state.demo_mode:
-        logs = state.demo_packets[::-1][:limit]
-    else:
-        rows = db.fetch_live_logs(state.db_conn, limit=limit)
-        logs = []
-        for r in rows:
-            row_dict = dict(r)
-            logs.append({
-                "timestamp": row_dict['ts'][11:19] if row_dict.get('ts') else "-",
-                "source": f"{row_dict.get('src_ip')}:{row_dict.get('src_port')}",
-                "destination": f"{row_dict.get('dst_ip')}:{row_dict.get('dst_port')}",
-                "protocol": row_dict.get('protocol', 'TCP'),
-                "ai_tool": row_dict.get('domain', 'Unknown'),
-                "ja4": row_dict.get('ja4_fingerprint'),
-                "size": fmt_bytes(row_dict.get('payload_len', 0))
-            })
-        return logs
+    """Return recent packet logs from the database."""
+    rows = db.fetch_live_logs(state.db_conn, limit=limit)
+    logs = []
+    for r in rows:
+        row_dict = dict(r)
+        logs.append({
+            "timestamp": row_dict['ts'][11:19] if row_dict.get('ts') else "-",
+            "source": f"{row_dict.get('src_ip')}:{row_dict.get('src_port')}",
+            "destination": f"{row_dict.get('dst_ip')}:{row_dict.get('dst_port')}",
+            "protocol": row_dict.get('protocol', 'TCP'),
+            "ai_tool": row_dict.get('domain', 'Unknown'),
+            "direction": row_dict.get('direction', 'OUTBOUND').upper(),
+            "size": fmt_bytes(row_dict.get('payload_len', 0)),
+            "device": classify_device(row_dict.get('src_ip'))
+        })
+    return logs
 
 @app.get("/api/status")
 async def get_status():

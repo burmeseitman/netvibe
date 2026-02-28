@@ -106,11 +106,24 @@ CREATE INDEX IF NOT EXISTS idx_alerts_packet_id   ON alerts(packet_id);
 
 def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
     """Return a SQLite connection with foreign-key support enabled."""
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA journal_mode = WAL;")   # better concurrent write perf
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")   # better concurrent write perf
+        conn.row_factory = sqlite3.Row
+        return conn
+    except sqlite3.OperationalError as e:
+        if "readonly database" in str(e).lower():
+            logger.warning(f"Database at {db_path} is read-only. This is often caused by running 'sudo netvibe' previously.")
+            # Fallback to temp DB for the current session
+            temp_db = Path("/tmp/netvibe_session.db")
+            logger.info(f"Falling back to session-only database at: {temp_db}")
+            conn = sqlite3.connect(str(temp_db), check_same_thread=False)
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.row_factory = sqlite3.Row
+            return conn
+        raise e
 
 
 # ---------------------------------------------------------------------------
@@ -482,3 +495,69 @@ def search_packets(
     rows = conn.execute(query, (*params, limit)).fetchall()
 
     return [dict(r) for r in rows]
+def create_mock_data(conn: sqlite3.Connection, count: int = 50) -> None:
+    """Populate the database with sample packets and alerts for demo purposes."""
+    import random
+    from datetime import datetime, timedelta
+
+    logger.info(f"Creating {count} mock traffic entries...")
+    
+    ai_agents = [
+        ("OpenAI", "openai.com"),
+        ("Claude", "claude.ai"),
+        ("Gemini", "gemini.google.com"),
+        ("Copilot", "github.com"),
+        ("Perplexity", "perplexity.ai"),
+        ("DeepSeek", "deepseek.com")
+    ]
+    
+    devices = [
+        ("00:1c:b3:aa:bb:cc", "MacBook-Pro", "Apple", "💻 MacBook"),
+        ("b8:27:eb:11:22:33", "Raspberry-Pi", "Raspberry Pi", "🔌 IoT Node"),
+        ("3c:5a:b4:44:55:66", "Pixel-7", "Google", "📱 Android"),
+        ("00:15:5d:00:11:22", "Win-Server", "Microsoft", "🖧 Production Server")
+    ]
+    
+    # 1. Populate Devices
+    for mac, host, manu, label in devices:
+        upsert_device(conn, mac=mac, hostname=host, manufacturer=manu, label=label)
+        
+    # 2. Populate Traffic
+    now = datetime.now()
+    for i in range(count):
+        agent_name, agent_kw = random.choice(ai_agents)
+        device = random.choice(devices)
+        mac, host, manu, label = device
+        
+        src_ip = f"192.168.1.{random.randint(10, 101)}"
+        dst_ip = f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
+        proto = random.choice(["TCP", "UDP", "QUIC"])
+        sport = random.randint(30000, 65000)
+        dport = 443
+        size = random.randint(100, 50000)
+        ts = (now - timedelta(minutes=random.randint(1, 1441))).isoformat()
+        
+        pkt_id = insert_packet(
+            conn,
+            src_ip=src_ip,
+            dst_ip=dst_ip,
+            protocol=proto,
+            src_port=sport,
+            dst_port=dport,
+            payload_len=size,
+            raw_summary=f"Mock Packet for {agent_name}",
+            timestamp=ts
+        )
+        
+        insert_alert(
+            conn,
+            packet_id=pkt_id,
+            domain=agent_kw,
+            direction=random.choice(["outbound", "inbound"]),
+            severity=random.choice(["info", "warning"]),
+            ja4=f"t13d{random.randint(10,99)}{random.randint(10,99)}00_{random.getrandbits(48):x}"[:18],
+            note="Generated in demo mode"
+        )
+        
+    conn.commit()
+    logger.info("Mock data generation complete.")
