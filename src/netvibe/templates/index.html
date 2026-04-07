@@ -6,6 +6,7 @@
     <title>NetVibe | AI Traffic Intel</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <link
       href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap"
       rel="stylesheet"
@@ -168,6 +169,13 @@
         0%,100% { opacity: 1; } 50% { opacity: 0.3; }
       }
       .splash-status { animation: blink 1.4s ease-in-out infinite; }
+
+      /* Topology Map Container */
+      #network-map {
+        width: 100%;
+        height: 600px;
+        outline: none;
+      }
     </style>
   </head>
   <body class="min-h-screen p-4 md:p-8">
@@ -279,7 +287,20 @@
       </div>
     </header>
 
-    <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
+    <!-- Navigation Tabs -->
+    <nav class="max-w-7xl mx-auto mb-8 flex gap-2">
+      <button id="tab-dashboard" onclick="switchTab('dashboard')" class="px-6 py-2 rounded-xl bg-sky-500/20 border border-sky-500/50 text-sky-400 text-xs font-bold transition-all shadow-[0_0_15px_rgba(56,189,248,0.1)]">
+        🏠 DASHBOARD
+      </button>
+      <button id="tab-incidents" onclick="switchTab('incidents')" class="px-6 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-400 text-xs font-bold hover:bg-slate-700 transition-all">
+        🛡️ INCIDENTS
+      </button>
+      <button id="tab-topology" onclick="switchTab('topology')" class="px-6 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-400 text-xs font-bold hover:bg-slate-700 transition-all">
+        🌐 TOPOLOGY
+      </button>
+    </nav>
+
+    <div id="dashboard-view" class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
       <!-- Sidebar Control Panel -->
       <aside class="lg:col-span-3 space-y-6">
         <div class="glass p-6 rounded-2xl neon-border">
@@ -496,10 +517,99 @@
               </tbody>
             </table>
           </div>
+    </div> <!-- end dashboard-view -->
+
+    <!-- Incidents View (Hidden by default) -->
+    <div id="incidents-view" class="max-w-7xl mx-auto hidden space-y-6">
+      <div class="glass p-6 rounded-2xl neon-border">
+        <div class="flex justify-between items-center mb-6">
+          <h4 class="text-sm font-bold text-slate-400 uppercase tracking-widest">Active Security Incidents</h4>
+          <button onclick="loadIncidents()" class="text-[10px] text-sky-400 hover:text-sky-300 border border-sky-500/30 px-3 py-1 rounded">🔄 Refresh</button>
+        </div>
+        
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="text-slate-500 uppercase font-bold border-b border-slate-800">
+              <tr>
+                <th class="p-3">ID</th>
+                <th class="p-3">Title</th>
+                <th class="p-3">Status</th>
+                <th class="p-3">Severity</th>
+                <th class="p-3">Assigned To</th>
+                <th class="p-3">Updated</th>
+                <th class="p-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody id="incidents-list" class="text-slate-300">
+              <!-- Incidents render here -->
+            </tbody>
+          </table>
         </div>
       </div>
 
+      <!-- Incident Detail (Hidden by default) -->
+      <div id="incident-detail" class="hidden glass p-6 rounded-2xl neon-border">
+         <div class="flex justify-between items-start mb-6">
+           <div id="detail-header">
+             <!-- Title/ID status -->
+           </div>
+           <button onclick="closeIncidentDetail()" class="px-3 py-1 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-400 hover:text-white transition-all">✕ Close</button>
+         </div>
+         
+         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+           <!-- Left: Alerts & Context -->
+           <div class="lg:col-span-2 space-y-4">
+             <h5 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Linked Evidence / Alerts</h5>
+             <div id="incident-alerts-view" class="space-y-2">
+               <!-- Alerts -->
+             </div>
+           </div>
+           <!-- Right: Actions & Comments -->
+           <div class="space-y-6">
+             <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800">
+               <h5 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4">Operations</h5>
+               <div class="space-y-3">
+                 <label class="text-[9px] text-slate-500 uppercase font-bold">Change Status</label>
+                 <select id="detail-status" onchange="updateStatus()" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-300 outline-none focus:border-sky-500 transition-all">
+                   <option value="NEW">New</option>
+                   <option value="OPEN">Open</option>
+                   <option value="INVESTIGATING">Investigating</option>
+                   <option value="RESOLVED">Resolved</option>
+                   <option value="CLOSED">Closed</option>
+                 </select>
+                 <button onclick="document.getElementById('comment-input-area').classList.remove('hidden')" class="w-full py-2 bg-sky-600/10 border border-sky-500/50 text-sky-400 text-xs font-bold rounded-lg hover:bg-sky-600/20 transition-all">Add Note</button>
+                  <button id="btn-ai-analyze" onclick="triggerAIAnalysis()" class="w-full py-2 bg-emerald-600/10 border border-emerald-500/50 text-emerald-400 text-xs font-bold rounded-lg hover:bg-emerald-600/20 transition-all mt-2">🤖 Ask AI Analyst</button>
+               </div>
+             </div>
+             
+             <div class="space-y-3">
+               <h5 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Analyst Log</h5>
+               <div id="incident-comments-list" class="space-y-3">
+                 <!-- Comments -->
+               </div>
+               <div id="comment-input-area" class="hidden mt-4 space-y-2">
+                 <textarea id="new-comment" placeholder="Add analyst insight..." class="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs text-slate-300 outline-none h-20 focus:border-sky-500 transition-all"></textarea>
+                 <div class="flex gap-2">
+                   <button onclick="postComment()" class="flex-1 py-1.5 bg-sky-600 text-white text-xs font-bold rounded-lg hover:bg-sky-500 transition-all">Post</button>
+                   <button onclick="document.getElementById('comment-input-area').classList.add('hidden')" class="flex-1 py-1.5 bg-slate-700 text-slate-300 text-xs font-bold rounded-lg hover:bg-slate-600 transition-all">Cancel</button>
+                 </div>
+               </div>
+      </div>
     </div>
+
+    <!-- Topology View (Hidden by default) -->
+    <div id="topology-view" class="max-w-7xl mx-auto hidden space-y-6">
+      <div class="glass p-6 rounded-2xl neon-border flex flex-col items-center">
+        <div class="w-full flex justify-between items-center mb-4">
+          <h4 class="text-sm font-bold text-slate-400 uppercase tracking-widest">Network Flow Topology (Last 24H)</h4>
+          <button onclick="renderTopologyMap()" class="text-[10px] text-sky-400 hover:text-sky-300 border border-sky-500/30 px-3 py-1 rounded">🔄 Refresh Map</button>
+        </div>
+        <p class="text-[10px] text-slate-500 mb-4 w-full text-left">Nodes represent connected IPs. Edges represent traffic bandwidth. <span class="text-red-400 font-bold">Red nodes</span> indicate highly malicious entities.</p>
+        
+        <div id="network-map" class="bg-black/40 rounded-xl border border-slate-800/50 shadow-inner"></div>
+      </div>
+    </div>
+
 
     <footer class="max-w-7xl mx-auto mt-6 text-center text-[10px] text-slate-500 pb-4 uppercase tracking-widest font-bold">
       <p>&copy; 2026 NetVibe. Released under MIT License.</p>
@@ -882,18 +992,18 @@
 
           ifaces.forEach(iface => {
             const opt = document.createElement("option");
-            opt.value = iface;
-            opt.textContent = iface;
+            opt.value = iface.name;
+            opt.textContent = iface.label;
             select.appendChild(opt);
           });
 
           // Restore prior selection if valid; otherwise use server default (first load only)
           if (previousValue && [...select.options].some(o => o.value === previousValue)) {
             select.value = previousValue;
-          } else if (!splashDismissed && data.active && ifaces.includes(data.active)) {
+          } else if (!splashDismissed && data.active && [...select.options].some(o => o.value === data.active)) {
             select.value = data.active;
           } else if (!splashDismissed && ifaces.length > 0) {
-            select.value = ifaces[0];
+            select.value = ifaces[0].name;
           }
 
           // Dismiss splash exactly once
@@ -1012,8 +1122,52 @@
         const wsUrl = `${protocol}//${window.location.host}/ws`;
         socket = new WebSocket(wsUrl);
         socket.onmessage = (event) => {
-          handleRealTimeUpdate(JSON.parse(event.data));
+          const msg = JSON.parse(event.data);
+          if (msg.type === "enrichment") {
+            handleEnrichmentUpdate(msg);
+          } else {
+            handleRealTimeUpdate(msg);
+          }
         };
+
+        function handleEnrichmentUpdate(data) {
+          const { ip, reputation } = data;
+          const score = reputation.score;
+          
+          // Find all rows with this IP
+          const rows = document.querySelectorAll(`[data-ip="${ip}"]`);
+          rows.forEach(row => {
+            const badgeContainer = row.querySelector(".reputation-badge");
+            if (!badgeContainer) return;
+            
+            let colorClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
+            let label = "Clean";
+            if (score > 75) {
+              colorClass = "text-red-400 bg-red-500/10 border-red-500/30";
+              label = "Malicious";
+            } else if (score > 30) {
+              colorClass = "text-amber-400 bg-amber-500/10 border-amber-500/30";
+              label = "Suspicious";
+            }
+            
+            badgeContainer.innerHTML = `
+              <span class="px-1.5 py-0.5 rounded border ${colorClass} text-[8px] font-bold uppercase tracking-tighter cursor-help" 
+                    title="Score: ${score}/100 via ${reputation.provider}\nTags: ${reputation.tags}">
+                ${label} (${score}%)
+              </span>
+            `;
+          });
+
+          // Also update Incident Detail if it's open and matches
+          if (currentIncidentId) {
+             const alertIps = document.querySelectorAll("#incident-alerts-view [data-ip]");
+             alertIps.forEach(el => {
+                if(el.getAttribute('data-ip') === ip) {
+                   el.innerHTML = `<span class="px-1.5 py-0.5 rounded border ${colorClass} text-[8px] font-bold uppercase">${label} ${score}%</span>`;
+                }
+             });
+          }
+        }
         socket.onclose = () => setTimeout(connectWebSocket, 5000);
       }
 
@@ -1065,7 +1219,12 @@
             <td class="p-3 text-slate-300">${deviceName}</td>
             <td class="${agentStyle}">${pkt.ai_tool}${isAi ? '' : '?'}</td>
             <td class="p-3 font-bold ${pkt.direction === "OUTBOUND" ? "text-sky-400" : "text-amber-400"} uppercase text-[8px]">${pkt.direction}</td>
-            <td class="p-3 font-mono text-slate-400 uppercase">${pkt.source} <span class="text-slate-600">→</span> ${pkt.destination}</td>
+            <td class="p-3 font-mono text-slate-400 uppercase" data-ip="${pkt.source.split(":")[0]}">
+              ${pkt.source} 
+              <div class="reputation-badge inline-block ml-1"></div>
+              <span class="text-slate-600">→</span> 
+              ${pkt.destination}
+            </td>
             <td class="p-3 text-slate-500 uppercase">${pkt.protocol || "—"}</td>
             <td class="p-3 font-mono text-slate-300">
                <span class="${isHistorical ? 'text-slate-400' : 'text-sky-400/80'}">${pkt.size || pkt.size_up || 0}</span> 
@@ -1074,7 +1233,10 @@
                <span class="text-slate-500">${isHistorical ? 'Historical' : 'Live'}</span>
             </td>
             <td class="p-3 font-mono text-slate-500">${isHistorical ? '-' : '~' + pkt.duration}</td>
-            <td class="p-3 text-right text-slate-400 italic">${pkt.status_note || (isHistorical ? 'Archived' : 'Active')}</td>
+            <td class="p-3 text-right text-slate-400 italic">
+               ${pkt.status_note || (isHistorical ? 'Archived' : 'Active')}
+               ${pkt.alert_id || isHistorical ? `<button onclick="promoteToIncident(${pkt.alert_id || 'null'}, '${pkt.ai_tool}')" class="ml-2 text-[9px] text-emerald-500 hover:text-emerald-300 border border-emerald-500/30 px-1 rounded">🚨 PROMOTE</button>` : ''}
+            </td>
         `;
 
         if (row && !isHistorical) {
@@ -1216,70 +1378,298 @@
         document.getElementById("search-panel").classList.add("hidden");
       }
 
-      function startPolling() {
-        if (refreshIntervalTimer) clearInterval(refreshIntervalTimer);
-        const interval = document.getElementById("refresh-interval").value * 1000;
-        syncState();
-        refreshIntervalTimer = setInterval(syncState, interval);
-      }
+      // --- Tab Switching ---
+      function switchTab(tab) {
+        const views = {
+          'dashboard': document.getElementById('dashboard-view'),
+          'incidents': document.getElementById('incidents-view'),
+          'topology': document.getElementById('topology-view')
+        };
+        const btns = {
+          'dashboard': document.getElementById('tab-dashboard'),
+          'incidents': document.getElementById('tab-incidents'),
+          'topology': document.getElementById('tab-topology')
+        };
 
-      async function syncState() {
-        try {
-          const res = await fetch("/api/stats");
-          const data = await res.json();
-          // Only update packet counter and uptime — do NOT load historical chart data
-          if (totalPackets < data.total_packets) {
-            totalPackets = data.total_packets;
-            document.getElementById("total-packets").innerText = totalPackets.toLocaleString();
+        // Reset all
+        Object.keys(views).forEach(k => {
+          if (views[k]) {
+            views[k].classList.add('hidden');
+            if(k === 'dashboard') views[k].classList.remove('grid');
+            btns[k].className = "px-6 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-400 text-xs font-bold hover:bg-slate-700 transition-all";
           }
-          document.getElementById("uptime").innerText = data.uptime;
-        } catch (err) {}
-      }
+        });
 
-      function updateIntensity() {
-        const hits = window._wsHits || 0;
-        window._wsHits = 0;
-        trafficHistory.push(hits);
-        trafficHistory.shift();
-        timeLabels.push(new Date().toLocaleTimeString());
-        timeLabels.shift();
-        lineChart.update("none");
-      }
-
-      // --- Event Listeners for Settings ---
-      document.getElementById("refresh-interval").addEventListener("change", (e) => {
-        const val = e.target.value;
-        document.getElementById("interval-val").innerText = val + "s";
-        startPolling();
-        clearInterval(intensityIntervalTimer);
-        intensityIntervalTimer = setInterval(updateIntensity, val * 1000);
-      });
-
-      document.getElementById("refresh-interval").addEventListener("input", (e) => {
-        document.getElementById("interval-val").innerText = e.target.value + "s";
-      });
-
-      document.getElementById("log-limit").addEventListener("input", (e) => {
-        logLimit = parseInt(e.target.value);
-        document.getElementById("log-limit-val").innerText = logLimit;
-        
-        // Immediate Pruning
-        const tbody = document.getElementById("log-body");
-        while (tbody.children.length > logLimit) {
-          tbody.removeChild(tbody.lastChild);
+        // Activate selected
+        if (tab === 'dashboard') {
+          views['dashboard'].classList.remove('hidden');
+          views['dashboard'].classList.add('grid');
+        } else {
+          views[tab].classList.remove('hidden');
         }
-      });
+        
+        btns[tab].className = "px-6 py-2 rounded-xl bg-sky-500/20 border border-sky-500/50 text-sky-400 text-xs font-bold transition-all shadow-[0_0_15px_rgba(56,189,248,0.1)]";
+
+        // Trigger tab specific loads
+        if (tab === 'incidents') loadIncidents();
+        if (tab === 'topology') renderTopologyMap();
+      }
+
+      // --- Topology Map Functions ---
+      let networkChart = null;
+
+      async function renderTopologyMap() {
+        const container = document.getElementById('network-map');
+        container.innerHTML = '<div class="w-full h-full flex items-center justify-center text-sky-400 animate-pulse text-xs font-bold">Gathering topology data...</div>';
+        
+        try {
+          const res = await fetch('/api/viz/topology');
+          const data = await res.json();
+          if (data.status === 'ok') {
+            container.innerHTML = ''; // clear loading
+
+            const maxBytes = Math.max(...data.data.edges.map(e => e.value), 1);
+
+            const nodes = new vis.DataSet(data.data.nodes.map(n => ({
+              id: n.id,
+              label: n.label,
+              title: n.title,
+              shape: n.group === 'local' ? 'box' : 'dot',
+              color: n.group === 'malicious' ? '#ef4444' : 
+                     (n.group === 'local' ? '#38bdf8' : 
+                     (n.group === 'ai' ? '#10b981' : '#64748b')),
+              font: { color: '#cbd5e1', face: 'Outfit', size: 12 },
+              size: n.group === 'local' ? 30 : (n.group === 'malicious' ? 25 : 15),
+              borderWidth: n.group === 'malicious' ? 3 : 1
+            })));
+
+            const edges = new vis.DataSet(data.data.edges.map(e => ({
+              from: e.from,
+              to: e.to,
+              value: e.value,
+              title: e.title,
+              color: { color: 'rgba(56, 189, 248, 0.2)', highlight: 'rgba(56, 189, 248, 0.8)' },
+              scaling: { min: 1, max: 10 },
+              smooth: { type: 'continuous' }
+            })));
+
+            const options = {
+              physics: {
+                solver: 'forceAtlas2Based',
+                forceAtlas2Based: { gravitationalConstant: -50, centralGravity: 0.01, springLength: 100, springConstant: 0.08 },
+                stabilization: { iterations: 150 }
+              },
+              interaction: { hover: true, tooltipDelay: 200 }
+            };
+
+            networkChart = new vis.Network(container, { nodes, edges }, options);
+          }
+        } catch (e) {
+          container.innerHTML = '<div class="w-full h-full flex items-center justify-center text-red-500 font-bold text-xs">Failed to load topology map</div>';
+        }
+      }
+
+      // --- Incident Functions ---
+      async function loadIncidents() {
+        const tbody = document.getElementById("incidents-list");
+        tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-500">Loading incidents...</td></tr>';
+        
+        try {
+          const res = await fetch("/api/incidents");
+          const data = await res.json();
+          if (data.status === "ok") {
+            tbody.innerHTML = "";
+            if (data.incidents.length === 0) {
+              tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-500">No security incidents found.</td></tr>';
+              return;
+            }
+            data.incidents.forEach(inc => {
+              const tr = document.createElement("tr");
+              tr.className = "border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer";
+              tr.onclick = () => showIncidentDetail(inc.id);
+              
+              const statusColors = {
+                'NEW': 'text-red-400 bg-red-500/10',
+                'OPEN': 'text-amber-400 bg-amber-500/10',
+                'INVESTIGATING': 'text-sky-400 bg-sky-500/10',
+                'RESOLVED': 'text-emerald-400 bg-emerald-500/10',
+                'CLOSED': 'text-slate-500 bg-slate-500/10'
+              };
+              
+              tr.innerHTML = `
+                <td class="p-3 font-mono text-slate-500">#${inc.id}</td>
+                <td class="p-3 font-bold text-slate-200">${inc.title}</td>
+                <td class="p-3">
+                  <span class="px-2 py-0.5 rounded text-[9px] font-bold ${statusColors[inc.status] || ''}">${inc.status}</span>
+                </td>
+                <td class="p-3 text-[10px] font-bold uppercase ${inc.severity === 'CRITICAL' ? 'text-red-500' : 'text-slate-400'}">${inc.severity}</td>
+                <td class="p-3 text-slate-500">${inc.assignee || 'Unassigned'}</td>
+                <td class="p-3 text-slate-500 text-[10px]">${inc.updated_at.substring(11, 19)}</td>
+                <td class="p-3 text-right">
+                  <button class="text-sky-400 hover:underline">View Details</button>
+                </td>
+              `;
+              tbody.appendChild(tr);
+            });
+          }
+        } catch (e) {
+          tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-red-500">Error loading incidents.</td></tr>';
+        }
+      }
+
+      let currentIncidentId = null;
+
+      async function showIncidentDetail(id) {
+        currentIncidentId = id;
+        const res = await fetch(`/api/incidents/${id}`);
+        const data = await res.json();
+        if (data.status !== "ok") return;
+        
+        const inc = data.incident;
+        document.getElementById("incident-detail").classList.remove("hidden");
+        
+        const statusColors = {
+          'NEW': 'text-red-400', 'OPEN': 'text-amber-400', 'INVESTIGATING': 'text-sky-400', 'RESOLVED': 'text-emerald-400', 'CLOSED': 'text-slate-500'
+        };
+
+        document.getElementById("detail-header").innerHTML = `
+          <div class="flex items-center gap-3">
+            <span class="text-2xl font-bold text-slate-200">${inc.title}</span>
+            <span class="px-3 py-1 bg-slate-800 rounded-lg text-xs font-mono text-slate-500">#${inc.id}</span>
+          </div>
+          <p class="text-xs text-slate-500 mt-1">${inc.description}</p>
+        `;
+        
+        document.getElementById("detail-status").value = inc.status;
+
+        // Render Alerts
+        const alertList = document.getElementById("incident-alerts-view");
+        alertList.innerHTML = "";
+        inc.alerts.forEach(a => {
+          const div = document.createElement("div");
+          div.className = "bg-slate-800/30 p-3 rounded-lg border border-slate-800 flex justify-between items-center";
+          div.innerHTML = `
+            <div>
+              <div class="text-[10px] font-bold text-sky-400 mb-1">${a.domain}</div>
+              <div class="text-[10px] font-mono text-slate-400" data-ip="${a.src_ip}">${a.src_ip} → ${a.dst_ip}</div>
+            </div>
+            <div class="text-right">
+              <div class="text-[9px] text-slate-500">${a.timestamp.substring(11, 19)}</div>
+              <div class="text-[9px] font-bold text-slate-300 uppercase">${a.direction}</div>
+            </div>
+          `;
+          alertList.appendChild(div);
+        });
+
+        // Render Comments
+        const commentList = document.getElementById("incident-comments-list");
+        commentList.innerHTML = "";
+        inc.comments.forEach(c => {
+          const div = document.createElement("div");
+          div.className = "bg-slate-800/20 p-3 rounded-lg border-l-2 border-sky-500";
+          div.innerHTML = `
+            <div class="flex justify-between text-[9px] mb-1">
+              <span class="font-bold text-sky-400">${c.author}</span>
+              <span class="text-slate-500">${c.created_at.substring(11, 16)}</span>
+            </div>
+            <p class="text-[11px] text-slate-300">${c.comment}</p>
+          `;
+          commentList.appendChild(div);
+        });
+
+        // Scroll to detail
+        document.getElementById("incident-detail").scrollIntoView({ behavior: 'smooth' });
+      }
+
+      function closeIncidentDetail() {
+        document.getElementById("incident-detail").classList.add("hidden");
+        currentIncidentId = null;
+      }
+
+      async function updateStatus() {
+        if (!currentIncidentId) return;
+        const status = document.getElementById("detail-status").value;
+        await fetch(`/api/incidents/${currentIncidentId}/status`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status })
+        });
+        loadIncidents();
+      }
+
+      async function postComment() {
+        if (!currentIncidentId) return;
+        const comment = document.getElementById("new-comment").value.trim();
+        if (!comment) return;
+        
+        await fetch(`/api/incidents/${currentIncidentId}/comments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ author: "Analyst", comment })
+        });
+        
+        document.getElementById("new-comment").value = "";
+        document.getElementById("comment-input-area").classList.add("hidden");
+        showIncidentDetail(currentIncidentId);
+      }
+
+      async function promoteToIncident(alertId, toolName) {
+        if (!alertId && !confirm("No specific Alert ID found. Create a manual incident?")) return;
+        
+        const title = prompt("Enter Incident Title:", `Suspicious ${toolName} Activity`);
+        if (!title) return;
+        
+        try {
+          const res = await fetch(`/api/alerts/${alertId}/promote`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title, severity: "HIGH" })
+          });
+          const data = await res.json();
+          if (data.status === "ok") {
+            if (confirm("Incident created successfully! Switch to Incidents view?")) {
+              switchTab('incidents');
+              showIncidentDetail(data.id);
+            }
+          }
+        } catch (e) {
+          alert("Failed to promote alert.");
+        }
+      }
+
+      async function triggerAIAnalysis() {
+        if (!currentIncidentId) return;
+        
+        const btn = document.getElementById("btn-ai-analyze");
+        const originalText = btn.innerHTML;
+        btn.innerHTML = `<span class="animate-pulse">⏳ AI is thinking (Llama.cpp)...</span>`;
+        btn.disabled = true;
+        btn.classList.add("opacity-50", "cursor-not-allowed");
+
+        try {
+          const res = await fetch(`/api/incidents/${currentIncidentId}/analyze`, { method: "POST" });
+          const data = await res.json();
+          if(data.status !== "ok") {
+            alert("AI Analysis failed: " + data.message);
+          }
+        } catch (e) {
+          console.error(e);
+          alert("Error triggering AI analysis");
+        } finally {
+          btn.innerHTML = originalText;
+          btn.disabled = false;
+          btn.classList.remove("opacity-50", "cursor-not-allowed");
+        }
+      }
+
 
       window.addEventListener("load", () => {
-        // loadInterfaces() runs first — it drives the splash → dashboard transition.
-        // initCharts() and the rest fire inside dismissSplash() AFTER content is visible,
-        // so Chart.js gets real canvas dimensions (not zero from display:none).
         loadAgents().then(() => {
           loadInterfaces();
         });
       });
     </script>
     </div> <!-- end #main-content -->
-
 </body>
 </html>
+

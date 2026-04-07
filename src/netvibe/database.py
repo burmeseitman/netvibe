@@ -91,12 +91,59 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 
 -- -------------------------------------------------------
+-- incidents: track security incidents
+-- -------------------------------------------------------
+CREATE TABLE IF NOT EXISTS incidents (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT NOT NULL,
+    description TEXT,
+    status      TEXT NOT NULL DEFAULT 'NEW', -- NEW, OPEN, INVESTIGATING, RESOLVED, CLOSED
+    severity    TEXT NOT NULL DEFAULT 'MEDIUM',
+    assignee    TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+-- -------------------------------------------------------
+-- incident_alerts: junction table between incidents and alerts
+-- -------------------------------------------------------
+CREATE TABLE IF NOT EXISTS incident_alerts (
+    incident_id INTEGER NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    alert_id    INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+    PRIMARY KEY (incident_id, alert_id)
+);
+
+-- -------------------------------------------------------
+-- incident_comments: analyst notes/collaboration
+-- -------------------------------------------------------
+CREATE TABLE IF NOT EXISTS incident_comments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id INTEGER NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    author      TEXT NOT NULL,
+    comment     TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ip_reputation (
+    ip_address      TEXT PRIMARY KEY,
+    score           INTEGER,            -- 0-100 (Abuse score)
+    is_malicious    BOOLEAN DEFAULT 0,
+    provider        TEXT,               -- AbuseIPDB, VirusTotal, etc.
+    tags            TEXT,               -- Comma-separated (e.g. "Botnet, TOR")
+    last_checked    TEXT NOT NULL,      -- ISO-8601 UTC
+    raw_data        TEXT                -- Full JSON response for drill-down
+);
+
+-- -------------------------------------------------------
 -- Indexes for fast lookups
 -- -------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_packets_timestamp  ON packets(timestamp);
 CREATE INDEX IF NOT EXISTS idx_packets_dst_ip     ON packets(dst_ip);
 CREATE INDEX IF NOT EXISTS idx_alerts_domain      ON alerts(domain);
 CREATE INDEX IF NOT EXISTS idx_alerts_packet_id   ON alerts(packet_id);
+CREATE INDEX IF NOT EXISTS idx_incidents_status   ON incidents(status);
+CREATE INDEX IF NOT EXISTS idx_incident_comments_id ON incident_comments(incident_id);
+CREATE INDEX IF NOT EXISTS idx_reputation_last_checked ON ip_reputation(last_checked);
 """
 
 
@@ -558,6 +605,220 @@ def create_mock_data(conn: sqlite3.Connection, count: int = 50) -> None:
             ja4=f"t13d{random.randint(10,99)}{random.randint(10,99)}00_{random.getrandbits(48):x}"[:18],
             note="Generated in demo mode"
         )
+    
+    # 3. Populate Mock Incidents for SOC Testing
+    try:
+        inc_id = create_incident(
+            conn,
+            title="Unauthorized OpenAI Data Exfiltration",
+            description="Abnormal outbound traffic detected towards openai.com from Win-Server. Potential data leak suspected.",
+            severity="CRITICAL",
+            status="INVESTIGATING"
+        )
+        add_incident_comment(conn, inc_id, "System", "Initial detection via behavioral rule #442.")
+        add_incident_comment(conn, inc_id, "Analyst", "Investigating source IP 192.168.1.101 (Win-Server). Traffic volume is 4x baseline.")
+        
+        # Link one random alert if any exist
+        recent_alerts = conn.execute("SELECT id FROM alerts ORDER BY id DESC LIMIT 1").fetchone()
+        if recent_alerts:
+            link_alert_to_incident(conn, inc_id, recent_alerts[0])
+            
+        create_incident(
+            conn,
+            title="Suspicious Claude.ai Session",
+            description="Multiple failed JA4 fingerprint matches for Claude.ai domain.",
+            severity="MEDIUM",
+            status="NEW"
+        )
+    except Exception as e:
+        logger.error(f"Failed to create mock incidents: {e}")
         
     conn.commit()
     logger.info("Mock data generation complete.")
+
+
+# ---------------------------------------------------------------------------
+# Incident Management Helpers
+# ---------------------------------------------------------------------------
+
+def create_incident(conn: sqlite3.Connection, title: str, description: str = "", severity: str = "MEDIUM", status: str = "NEW", assignee: str = None) -> int:
+    """Create a new security incident and return its ID."""
+    ts = datetime.now().isoformat(timespec="microseconds")
+    cur = conn.execute(
+        """
+        INSERT INTO incidents (title, description, severity, status, assignee, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (title, description, severity, status, assignee, ts, ts)
+    )
+    conn.commit()
+    return cur.lastrowid
+
+def get_incident(conn: sqlite3.Connection, incident_id: int) -> dict | None:
+    """Return a single incident record with its alerts and comments."""
+    row = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+    if not row: return None
+    
+    incident = dict(row)
+    
+    # Fetch related alerts
+    alerts = conn.execute(
+        """
+        SELECT 
+            a.*, p.src_ip, p.dst_ip, p.protocol, p.src_port, p.dst_port, p.payload_len
+        FROM alerts a
+        JOIN packets p ON p.id = a.packet_id
+        JOIN incident_alerts ia ON ia.alert_id = a.id
+        WHERE ia.incident_id = ?
+        """,
+        (incident_id,)
+    ).fetchall()
+    incident['alerts'] = [dict(a) for a in alerts]
+    
+    # Fetch comments
+    comments = conn.execute(
+        "SELECT * FROM incident_comments WHERE incident_id = ? ORDER BY created_at ASC",
+        (incident_id,)
+    ).fetchall()
+    incident['comments'] = [dict(c) for c in comments]
+    
+    return incident
+
+def get_all_incidents(conn: sqlite3.Connection, status: str = None) -> list[dict]:
+    """Return all incidents, optionally filtered by status."""
+    query = "SELECT * FROM incidents"
+    params = []
+    if status:
+        query += " WHERE status = ?"
+        params.append(status)
+    query += " ORDER BY created_at DESC"
+    
+    rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+def update_incident_status(conn: sqlite3.Connection, incident_id: int, status: str) -> bool:
+    """Update incident status and updated_at timestamp."""
+    ts = datetime.now().isoformat(timespec="microseconds")
+    cur = conn.execute(
+        "UPDATE incidents SET status = ?, updated_at = ? WHERE id = ?",
+        (status, ts, incident_id)
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+def add_incident_comment(conn: sqlite3.Connection, incident_id: int, author: str, comment: str) -> int:
+    """Add an analyst comment to an incident."""
+    ts = datetime.now().isoformat(timespec="microseconds")
+    cur = conn.execute(
+        "INSERT INTO incident_comments (incident_id, author, comment, created_at) VALUES (?, ?, ?, ?)",
+        (incident_id, author, comment, ts)
+    )
+    # Update incident updated_at
+    conn.execute("UPDATE incidents SET updated_at = ? WHERE id = ?", (ts, incident_id))
+    conn.commit()
+    return cur.lastrowid
+
+def link_alert_to_incident(conn: sqlite3.Connection, incident_id: int, alert_id: int) -> bool:
+    """Associate an alert with an incident."""
+    try:
+        conn.execute(
+            "INSERT INTO incident_alerts (incident_id, alert_id) VALUES (?, ?)",
+            (incident_id, alert_id)
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+def get_reputation(conn: sqlite3.Connection, ip_address: str) -> dict:
+    """Fetch reputation data for an IP from the local cache."""
+    row = conn.execute(
+        "SELECT * FROM ip_reputation WHERE ip_address = ?", 
+        (ip_address,)
+    ).fetchone()
+    return dict(row) if row else None
+
+def update_reputation(conn: sqlite3.Connection, data: dict):
+    """Upsert reputation data into the local cache."""
+    now = datetime.utcnow().isoformat()
+    conn.execute("""
+        INSERT OR REPLACE INTO ip_reputation (
+            ip_address, score, is_malicious, provider, tags, last_checked, raw_data
+        ) VALUES (:ip, :score, :is_malicious, :provider, :tags, :last_checked, :raw_data)
+    """, {
+        "ip": data['ip'],
+        "score": data.get('score', 0),
+        "is_malicious": data.get('is_malicious', False),
+        "provider": data.get('provider', 'Simulation'),
+        "tags": data.get('tags', ''),
+        "last_checked": now,
+        "raw_data": data.get('raw_data', '{}')
+    })
+    conn.commit()
+
+# ---------------------------------------------------------------------------
+# Topology Analytics
+# ---------------------------------------------------------------------------
+
+def get_topology_data(conn: sqlite3.Connection, hours: int = 24) -> dict:
+    """
+    Fetch aggregated network traffic data for the last N hours.
+    Returns a dictionary suitable for vis-network consumption:
+    { "nodes": [...], "edges": [...] }
+    """
+    # Build edges by aggregating traffic
+    rows = conn.execute(f"""
+        SELECT 
+            p.src_ip, 
+            p.dst_ip, 
+            MAX(a.domain) as domain, 
+            SUM(p.payload_len) as total_bytes, 
+            COUNT(p.id) as flow_count
+        FROM alerts a
+        JOIN packets p ON a.packet_id = p.id
+        WHERE datetime(p.timestamp) >= datetime('now', '-{hours} hours')
+        GROUP BY p.src_ip, p.dst_ip
+    """).fetchall()
+
+    nodes = {}
+    edges = []
+    
+    for row in rows:
+        src = row['src_ip']
+        dst = row['dst_ip']
+        bytes_tx = row['total_bytes'] or 1
+        
+        # Add nodes
+        if src not in nodes:
+            rep = get_reputation(conn, src)
+            is_mal = rep and rep.get('is_malicious')
+            nodes[src] = {
+                "id": src, 
+                "label": src, 
+                "group": "malicious" if is_mal else "local",
+                "title": f"Reputation: {rep.get('score', 'N/A') if rep else 'Unknown'}"
+            }
+        
+        if dst not in nodes:
+            rep = get_reputation(conn, dst)
+            is_mal = rep and rep.get('is_malicious')
+            nodes[dst] = {
+                "id": dst, 
+                "label": row['domain'] or dst, 
+                "group": "malicious" if is_mal else ("ai" if row['domain'] else "remote"),
+                "title": f"Reputation: {rep.get('score', 'N/A') if rep else 'Unknown'}"
+            }
+            
+        # Add edge
+        edges.append({
+            "from": src,
+            "to": dst,
+            "value": bytes_tx,
+            "title": f"{row['flow_count']} packets, {bytes_tx} bytes"
+        })
+
+    return {
+        "nodes": list(nodes.values()),
+        "edges": edges
+    }
+
+# --- End of database.py ---

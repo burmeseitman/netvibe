@@ -16,6 +16,20 @@ class AgentRequest(BaseModel):
     name: str
     domain_keyword: str
 
+class IncidentUpdateRequest(BaseModel):
+    status: str | None = None
+    severity: str | None = None
+    assignee: str | None = None
+
+class IncidentCommentRequest(BaseModel):
+    author: str
+    comment: str
+
+class IncidentPromotionRequest(BaseModel):
+    title: str
+    description: str | None = None
+    severity: str = "MEDIUM"
+
 import pandas as pd
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -24,6 +38,7 @@ from fastapi.templating import Jinja2Templates
 
 from netvibe import database as db
 from netvibe.sniffer import NetVibeSniffer
+from netvibe.intelligence import IntelEngine
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -35,10 +50,12 @@ class AppState:
     def __init__(self):
         self.sniffer = None
         self.db_conn = None
+        self.intel_engine = None
         self.demo_mode = False
         self.demo_packets = []
         self.start_time = datetime.now()
         self.alert_queue = asyncio.Queue()
+        self.enrichment_queue = asyncio.Queue() # Queue specifically for Intel Enrichment
         self.connections = []
         self.running = False
         self.local_ip = None
@@ -72,9 +89,13 @@ async def broadcast_updates():
     while True:
         try:
             alert_data = await state.alert_queue.get()
-            # Enrich with device classification
-            src_ip = alert_data.get("source", "").split(":")[0]
+            src_ip = alert_data.get("source", "").split(":")[0] or alert_data.get("src_ip")
             src_mac = alert_data.get("src_mac")
+            
+            # Phase 2: Queue for Intelligence Enrichment
+            if src_ip:
+                await state.enrichment_queue.put({"src_ip": src_ip})
+                
             if "device" not in alert_data or alert_data["device"] == "🌐 Remote":
                 alert_data["device"] = classify_device(src_ip, src_mac)
             await manager.broadcast(alert_data)
@@ -91,6 +112,37 @@ async def demo_sender():
             packet = generate_demo_packet()
             await manager.broadcast(packet)
         else:
+            await asyncio.sleep(1)
+
+async def enrichment_worker():
+    """Background task to enrich new alerts with threat intelligence."""
+    logger.info("Enrichment worker started.")
+    while True:
+        # We listen for alerts that need enrichment
+        try:
+            # We get alerts from the sniffer's queue or manual promotion
+            alert_data = await state.enrichment_queue.get()
+            ip_to_check = alert_data.get('src_ip')
+            
+            if ip_to_check and ip_to_check != state.local_ip:
+                logger.debug(f"Enriching IP: {ip_to_check}")
+                reputation = await state.intel_engine.get_ip_reputation(ip_to_check)
+                
+                # Broadcast the enrichment update to all connected UIs
+                update_msg = {
+                    "type": "enrichment",
+                    "ip": ip_to_check,
+                    "reputation": reputation
+                }
+                await manager.broadcast(update_msg)
+                
+                # If highly malicious, we could auto-promote or tag
+                if reputation.get('score', 0) > 90:
+                    logger.warning(f"CRITICAL REPUTATION DETECTED for {ip_to_check}: {reputation['score']}")
+            
+            state.enrichment_queue.task_done()
+        except Exception as e:
+            logger.error(f"Enrichment worker error: {e}")
             await asyncio.sleep(1)
 
 @asynccontextmanager
@@ -113,12 +165,14 @@ async def lifespan(app: FastAPI):
     else:
         if force_demo:
             logger.info("Forced demo mode requested.")
-            # Populate with mock data if DB is empty
-            alerts = db.fetch_recent_alerts(state.db_conn, limit=1)
-            if not alerts:
-                db.create_mock_data(state.db_conn, count=50)
         else:
             logger.warning(f"Environment check failed: {msg}. Falling back to demo mode.")
+            
+        # Populate with mock data if DB is empty
+        incidents = db.get_all_incidents(state.db_conn)
+        if not incidents:
+            db.create_mock_data(state.db_conn, count=50)
+            
         state.demo_mode = True
         state.running = False
 
@@ -134,13 +188,18 @@ async def lifespan(app: FastAPI):
     except Exception: pass
 
     # Start the broadcaster so WebSocket connections work immediately
+    state.intel_engine = IntelEngine(state.db_conn)
     asyncio.create_task(broadcast_updates())
+    asyncio.create_task(enrichment_worker())
+    asyncio.create_task(demo_sender())
 
     yield
 
     # Shutdown
     if state.sniffer and state.sniffer._running:
         state.sniffer.stop()
+    if state.intel_engine:
+        await state.intel_engine.close()
     if state.db_conn:
         state.db_conn.close()
     logger.info("NetVibe Backend shut down.")
@@ -349,7 +408,7 @@ def generate_demo_packet():
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/api/stats")
 async def get_stats():
@@ -413,23 +472,90 @@ async def get_status():
 
 @app.get("/api/interfaces")
 async def get_interfaces():
-    # Prefixes of virtual/loopback interfaces to exclude
+    """Return a list of network interfaces with friendly names (especially for Windows)."""
+    try:
+        # Windows-specific enrichment
+        import platform
+        if platform.system() == "Windows":
+            from scapy.arch.windows import get_windows_if_list
+            win_ifaces = get_windows_if_list()
+            
+            # Simple heuristic to prioritize physical adapters with IPs
+            enriched = []
+            best_guess = None
+            for iface in win_ifaces:
+                desc = iface.get('description', '') or iface.get('name', '')
+                pcap_name = iface.get('pcap_name') or iface.get('guid')
+                ips = iface.get('ips', [])
+                
+                # Basic filter to hide irrelevant tunnel/pseudo interfaces
+                if any(p in desc.lower() for p in ["tunnel", "pseudo", "loopback", "virtual adapter"]):
+                    continue
+                
+                if not best_guess and ips:
+                    # Pick the first physical-looking adapter that has an IP
+                    best_guess = pcap_name
+
+                enriched.append({
+                    "name": pcap_name,
+                    "label": desc + (f" ({ips[0]})" if ips else "")
+                })
+            
+            active = state.sniffer._interface if state.sniffer and state.sniffer._interface else (best_guess or None)
+            return {"interfaces": enriched, "active": active, "is_windows": True}
+        
+    except Exception as e:
+        logger.warning(f"Windows interface enrichment failed: {e}")
+
+    # Fallback to standard scapy approach
     SKIP_PREFIXES = ("lo", "gif", "stf", "awdl", "llw", "utun", "anpi", "bridge", "ap")
     try:
         all_ifaces = get_if_list()
         real_ifaces = [
-            i for i in all_ifaces
+            {"name": i, "label": i} for i in all_ifaces
             if not any(i.startswith(p) for p in SKIP_PREFIXES)
         ]
         active = None
         if state.sniffer and state.sniffer._interface:
             active = state.sniffer._interface
         elif real_ifaces:
-            active = real_ifaces[0]
-        return {"interfaces": real_ifaces, "active": active}
+            active = real_ifaces[0]['name']
+        return {"interfaces": real_ifaces, "active": active, "is_windows": False}
     except Exception as e:
         logger.error(f"Error listing interfaces: {e}")
         return {"interfaces": [], "active": None}
+
+@app.post("/api/incidents/{incident_id}/analyze")
+async def analyze_incident(incident_id: int):
+    """Trigger the local Llama model to analyze the incident and post a comment."""
+    inc = db.get_incident(state.db_conn, incident_id)
+    if not inc:
+        return {"status": "error", "message": "Incident not found"}
+        
+    alerts = db.get_incident_alerts(state.db_conn, incident_id)
+    
+    # Format alerts summary for the LLM
+    summary = []
+    for a in alerts:
+        summary.append(f"- Alert ID {a['id']}: {a['direction']} traffic to {a['domain']} ({a['src_ip']} -> {a['dst_ip']}). Note: {a['note']}")
+    alerts_text = "\n".join(summary) if summary else "No linked alerts."
+    
+    from netvibe.local_ai import analyst_engine
+    
+    # Run the analysis asynchronously
+    analysis = await analyst_engine.analyze_incident(inc['title'], inc['description'], alerts_text)
+    
+    # Post the result as a comment
+    db.add_incident_comment(state.db_conn, incident_id, author="AI Analyst", comment=analysis)
+    
+    # Notify connected clients
+    await manager.broadcast({
+        "type": "incident_update", 
+        "incident_id": incident_id,
+        "message": "AI Analysis complete"
+    })
+    
+    return {"status": "ok"}
 
 @app.post("/api/control/start")
 async def start_control(req: ControlRequest):
@@ -541,6 +667,86 @@ async def export_agents():
         logger.error(f"Failed to export agents: {e}")
         return {"status": "error", "message": str(e)}
 
+# ── 3. Incident Management Routes ───────────────────────────────────────────
+
+@app.get("/api/incidents")
+async def get_incidents(status: str | None = None):
+    """Return all incidents from the database."""
+    try:
+        incidents = db.get_all_incidents(state.db_conn, status=status)
+        return {"status": "ok", "incidents": incidents}
+    except Exception as e:
+        logger.error(f"Failed to get incidents: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/incidents/{incident_id}")
+async def get_incident_details(incident_id: int):
+    """Return details of a specific incident, including alerts and comments."""
+    try:
+        incident = db.get_incident(state.db_conn, incident_id)
+        if incident:
+            return {"status": "ok", "incident": incident}
+        return {"status": "error", "message": "Incident not found"}
+    except Exception as e:
+        logger.error(f"Failed to get incident {incident_id}: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/alerts/{alert_id}/promote")
+async def promote_alert_to_incident(alert_id: int, req: IncidentPromotionRequest):
+    """Promote a specific alert to a new security incident."""
+    try:
+        # 1. Create the incident
+        incident_id = db.create_incident(
+            state.db_conn,
+            title=req.title,
+            description=req.description or f"Auto-promoted from alert #{alert_id}",
+            severity=req.severity,
+            status="OPEN"
+        )
+        # 2. Link the alert
+        db.link_alert_to_incident(state.db_conn, incident_id, alert_id)
+        
+        # 3. Add initial system comment
+        db.add_incident_comment(
+            state.db_conn, 
+            incident_id, 
+            author="System", 
+            comment=f"Incident opened via promotion of Alert #{alert_id}"
+        )
+        
+        return {"status": "ok", "id": incident_id}
+    except Exception as e:
+        logger.error(f"Failed to promote alert {alert_id}: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.put("/api/incidents/{incident_id}/status")
+async def update_incident_status_route(incident_id: int, req: IncidentUpdateRequest):
+    """Update the status or severity of an incident."""
+    try:
+        if req.status:
+            db.update_incident_status(state.db_conn, incident_id, req.status)
+        
+        # Note: Added basic status update, could extend to severity/assignee later
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Failed to update incident {incident_id}: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/incidents/{incident_id}/comments")
+async def add_incident_comment_route(incident_id: int, req: IncidentCommentRequest):
+    """Add a new comment to an incident."""
+    try:
+        comment_id = db.add_incident_comment(
+            state.db_conn,
+            incident_id,
+            author=req.author,
+            comment=req.comment
+        )
+        return {"status": "ok", "id": comment_id}
+    except Exception as e:
+        logger.error(f"Failed to add comment to incident {incident_id}: {e}")
+        return {"status": "error", "message": str(e)}
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -553,6 +759,24 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         manager.disconnect(websocket)
 
+@app.get("/api/reputation/{ip}")
+async def get_ip_reputation(ip: str):
+    """Fetch reputation for a specific IP (cached or fresh)."""
+    if not state.intel_engine:
+        return {"status": "error", "message": "Intel engine not initialized"}
+    
+    reputation = await state.intel_engine.get_ip_reputation(ip)
+    return {"status": "ok", "reputation": reputation}
+
+@app.get("/api/viz/topology")
+async def get_topology():
+    """Fetch aggregated topology data for vis-network."""
+    topology = db.get_topology_data(state.db_conn, hours=24)
+    return {"status": "ok", "data": topology}
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8503)  # nosec B104
+    import os
+    # Support overriding port via environment variable; default to 8515
+    port = int(os.environ.get("PORT", 8515))
+    uvicorn.run(app, host="0.0.0.0", port=port)  # nosec B104

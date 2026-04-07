@@ -29,7 +29,16 @@ Don't have root access right now? No problem. NetVibe includes a fully functiona
 netvibe --demo
 ```
 
+
 ---
+
+## ⚡ Latest Updates (v1.1)
+- **Modernized Dependency Management**: Fully migrated to `pyproject.toml`. The legacy `requirements.txt` has been removed.
+- **Robust Demo Mode**: If packet capture drivers aren't found, the Demo Mode now seamlessly runs an interactive background simulation with synthetic network traffic and mock SOC incidents pre-populated in a local SQLite database.
+- **Stability Fixes**: Resolved 500 Internal Server Error incompatibilities with newer Starlette/FastAPI versions and fixed background broadcast crashes.
+
+---
+
 
 ## ✨ Premium Features
 
@@ -76,7 +85,7 @@ setup.bat
 
 ### 1. Automated Setup Process
 When you run the setup command, NetVibe performs the following:
-- **Environment Isolation**: Creates a dedicated Python virtual environment (`env/`).
+- **Environment Isolation**: Creates a dedicated Python virtual environment (`.venv/`).
 - **Core Dependencies**: Installs the high-performance traffic monitoring suite.
 - **Driver Detection**: 
   - **Windows**: Automatically detects if `Npcap` is missing, downloads the installer, and launches it for you.
